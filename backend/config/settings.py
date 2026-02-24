@@ -134,6 +134,7 @@ CELERY_TIMEZONE = TIME_ZONE
 # billiard's prefork pool uses WMI calls that crash on Python 3.14 on Windows.
 # The solo pool runs tasks in the main process and avoids subprocess spawning entirely.
 CELERY_WORKER_POOL = "solo"
+BACKUP_EXECUTION_MODE = os.getenv("BACKUP_EXECUTION_MODE", "auto").lower()
 CELERY_BEAT_SCHEDULE = {
     "scan-due-backups-every-minute": {
         "task": "apps.backups.tasks.schedule_due_backups",

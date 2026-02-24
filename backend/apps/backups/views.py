@@ -1,6 +1,3 @@
-from pathlib import Path
-
-from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 from rest_framework import status, viewsets
@@ -11,12 +8,22 @@ from rest_framework.response import Response
 from rest_framework.throttling import UserRateThrottle
 
 from apps.audit.services import create_audit_log
+from apps.hosts.access import accessible_configs_for_user
 from apps.hosts.models import DatabaseConfig
 
-from .models import Backup, BackupStatus, RestoreJob, RestoreStatus
-from .serializers import BackupSerializer, RestoreJobSerializer, RestoreSerializer, TriggerBackupSerializer
-from .services import get_backup_preflight_error
-from .tasks import run_backup_task, run_restore_task
+from .models import Backup, BackupDeletionRequest, BackupStatus, DeletionRequestStatus, RestoreJob, RestoreStatus
+from .serializers import (
+    BackupSerializer,
+    BackupDeletionRequestSerializer,
+    DeleteBackupSerializer,
+    ManualReplicationSerializer,
+    ReviewDeletionRequestSerializer,
+    RestoreJobSerializer,
+    RestoreSerializer,
+    TriggerBackupSerializer,
+)
+from .services import delete_backup_artifacts, get_backup_preflight_error
+from .tasks import run_backup_task, run_replication_task, run_restore_task
 
 
 class RestoreThrottle(UserRateThrottle):
@@ -57,14 +64,15 @@ class BackupViewSet(viewsets.ReadOnlyModelViewSet):
     def _filter_configs_for_user(self, queryset, user):
         if user.is_admin:
             return queryset
-        return queryset.filter(database__owner=user)
+        return queryset.filter(id__in=accessible_configs_for_user(user).values_list("id", flat=True))
 
     def get_queryset(self):
         queryset = super().get_queryset()
         user = self.request.user
         if user.is_admin:
             return queryset
-        return queryset.filter(database_config__database__owner=user)
+        accessible_config_ids = accessible_configs_for_user(user).values_list("id", flat=True)
+        return queryset.filter(database_config_id__in=accessible_config_ids)
 
     @action(detail=False, methods=["post"], throttle_classes=[ManualBackupThrottle], url_path="trigger")
     def trigger(self, request):
@@ -225,25 +233,187 @@ class BackupViewSet(viewsets.ReadOnlyModelViewSet):
             status=status.HTTP_202_ACCEPTED,
         )
 
+    @action(detail=True, methods=["post"], url_path="replicate")
+    def replicate(self, request, pk=None):
+        """Trigger manual replication of a successful backup to selected configured replication hosts."""
+        backup = self.get_object()
+
+        if backup.status != BackupStatus.SUCCESS:
+            return Response(
+                {"detail": "Only successful backups can be replicated."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        serializer = ManualReplicationSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        requested_host_ids = serializer.validated_data["storage_host_ids"]
+
+        policies = list(
+            backup.database_config.replication_policies.filter(enabled=True, storage_host_id__in=requested_host_ids)
+        )
+        matched_ids = {policy.storage_host_id for policy in policies}
+        missing_ids = [host_id for host_id in requested_host_ids if host_id not in matched_ids]
+        if missing_ids:
+            return Response(
+                {
+                    "detail": "One or more selected hosts are not enabled replication targets for this backup config.",
+                    "invalid_storage_host_ids": missing_ids,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            from config.celery import app as celery_app
+
+            online_workers = celery_app.control.ping(timeout=1.0)
+            if not online_workers:
+                return Response(
+                    {"detail": "No Celery workers are online. Start a worker and retry."},
+                    status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                )
+        except Exception:
+            return Response(
+                {"detail": "Unable to reach Celery workers. Verify Redis and worker status."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        for policy in policies:
+            transaction.on_commit(
+                lambda b_id=backup.id, h_id=policy.storage_host_id, remote=policy.remote_path: run_replication_task.delay(
+                    b_id,
+                    h_id,
+                    remote,
+                )
+            )
+
+        create_audit_log(
+            user=request.user,
+            action="REPLICATION_TRIGGERED_MANUAL",
+            target=f"Backup:{backup.id}",
+            metadata={"storage_host_ids": requested_host_ids},
+        )
+        return Response(
+            {
+                "status": "replication_accepted",
+                "backup_id": backup.id,
+                "storage_host_ids": requested_host_ids,
+                "count": len(requested_host_ids),
+            },
+            status=status.HTTP_202_ACCEPTED,
+        )
+
     @action(detail=True, methods=["delete"])
     def manual_delete(self, request, pk=None):
         backup = self.get_object()
         user = request.user
-        owner_id = backup.database_config.database.owner_id
-        if not user.is_admin and owner_id != user.id:
-            raise PermissionDenied("You cannot delete this backup.")
-        if backup.status != BackupStatus.SUCCESS and not user.is_admin:
-            raise PermissionDenied("Only admins can delete non-success backups.")
+        serializer = DeleteBackupSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        delete_replications = serializer.validated_data["delete_replications"]
 
-        file_path = Path(backup.file_path)
-        if file_path.exists() and str(file_path).startswith(str(settings.MEDIA_ROOT)):
-            file_path.unlink()
+        if not user.is_admin:
+            if backup.status != BackupStatus.SUCCESS:
+                raise PermissionDenied("Only successful backups can be requested for deletion.")
+            existing_pending = BackupDeletionRequest.objects.filter(
+                backup=backup,
+                requested_by=user,
+                status=DeletionRequestStatus.PENDING,
+            ).exists()
+            if existing_pending:
+                return Response(
+                    {"detail": "A pending deletion request already exists for this backup."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
+            deletion_request = BackupDeletionRequest.objects.create(
+                backup=backup,
+                requested_by=user,
+                delete_replications=delete_replications,
+            )
+            create_audit_log(
+                user=user,
+                action="BACKUP_DELETE_REQUESTED",
+                target=f"Backup:{backup.id}",
+                metadata={
+                    "database_config_id": backup.database_config_id,
+                    "delete_request_id": deletion_request.id,
+                    "delete_replications": delete_replications,
+                },
+            )
+            return Response(
+                {
+                    "status": "deletion_requested",
+                    "backup_id": backup.id,
+                    "deletion_request_id": deletion_request.id,
+                },
+                status=status.HTTP_202_ACCEPTED,
+            )
+
+        delete_backup_artifacts(backup, delete_replications=delete_replications)
         create_audit_log(
             user=user,
             action="BACKUP_DELETED_MANUAL",
             target=f"Backup:{backup.id}",
-            metadata={"database_config_id": backup.database_config_id},
+            metadata={"database_config_id": backup.database_config_id, "delete_replications": delete_replications},
         )
         backup.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+    @action(detail=False, methods=["get"], url_path="deletion-requests")
+    def deletion_requests(self, request):
+        if not request.user.is_admin:
+            raise PermissionDenied("Only admins can review deletion requests.")
+
+        queryset = BackupDeletionRequest.objects.select_related(
+            "backup",
+            "backup__database_config__database",
+            "requested_by",
+            "reviewed_by",
+        ).all()
+        serializer = BackupDeletionRequestSerializer(queryset, many=True)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=["post"], url_path=r"deletion-requests/(?P<request_id>[^/.]+)/review")
+    def review_deletion_request(self, request, request_id=None):
+        if not request.user.is_admin:
+            raise PermissionDenied("Only admins can review deletion requests.")
+
+        review_serializer = ReviewDeletionRequestSerializer(data=request.data)
+        review_serializer.is_valid(raise_exception=True)
+
+        deletion_request = BackupDeletionRequest.objects.select_related("backup").filter(id=request_id).first()
+        if deletion_request is None:
+            return Response({"detail": "Deletion request not found."}, status=status.HTTP_404_NOT_FOUND)
+        if deletion_request.status != DeletionRequestStatus.PENDING:
+            return Response({"detail": "Deletion request is already reviewed."}, status=status.HTTP_400_BAD_REQUEST)
+
+        action_value = review_serializer.validated_data["action"]
+        admin_note = review_serializer.validated_data.get("admin_note", "")
+
+        deletion_request.status = action_value
+        deletion_request.reviewed_by = request.user
+        deletion_request.reviewed_at = timezone.now()
+        deletion_request.admin_note = admin_note
+        deletion_request.save(update_fields=["status", "reviewed_by", "reviewed_at", "admin_note"])
+
+        if action_value == DeletionRequestStatus.APPROVED:
+            backup = deletion_request.backup
+            delete_backup_artifacts(backup, delete_replications=deletion_request.delete_replications)
+            create_audit_log(
+                user=request.user,
+                action="BACKUP_DELETE_APPROVED",
+                target=f"Backup:{backup.id}",
+                metadata={
+                    "delete_request_id": deletion_request.id,
+                    "delete_replications": deletion_request.delete_replications,
+                    "admin_note": admin_note,
+                },
+            )
+            backup.delete()
+        else:
+            create_audit_log(
+                user=request.user,
+                action="BACKUP_DELETE_DENIED",
+                target=f"Backup:{deletion_request.backup_id}",
+                metadata={"delete_request_id": deletion_request.id, "admin_note": admin_note},
+            )
+        return Response({"status": deletion_request.status, "deletion_request_id": deletion_request.id})

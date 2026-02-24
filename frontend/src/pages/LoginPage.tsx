@@ -42,7 +42,7 @@ export function LoginPage() {
       <Card className="w-full max-w-md p-8">
         <p className="font-mono text-xs uppercase tracking-[0.2em] text-muted-foreground">authentication</p>
         <h1 className="mt-3 font-headline text-4xl">
-          Sign in to <span className="gradient-text">Backup Automation</span>
+          Sign in to <span className="gradient-text">Database Hoarder</span>
         </h1>
 
         <form className="mt-8 space-y-4" onSubmit={handleSubmit}>

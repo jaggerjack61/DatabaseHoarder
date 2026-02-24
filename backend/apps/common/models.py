@@ -7,6 +7,15 @@ class SiteSettings(models.Model):
     Use SiteSettings.get() to read; never create more than one row.
     """
 
+    BACKUP_MODE_PYTHON = "python"
+    BACKUP_MODE_NATIVE = "native"
+    BACKUP_MODE_AUTO = "auto"
+    BACKUP_MODE_CHOICES = (
+        (BACKUP_MODE_PYTHON, "Python Modules"),
+        (BACKUP_MODE_NATIVE, "Native CLI"),
+        (BACKUP_MODE_AUTO, "Auto (Prefer Native)"),
+    )
+
     restore_throttle_rate = models.CharField(
         max_length=32,
         default="30/hour",
@@ -16,6 +25,12 @@ class SiteSettings(models.Model):
         max_length=32,
         default="60/hour",
         help_text="Manual backup trigger rate limit, e.g. 60/hour.",
+    )
+    backup_execution_mode = models.CharField(
+        max_length=16,
+        choices=BACKUP_MODE_CHOICES,
+        default=BACKUP_MODE_AUTO,
+        help_text="Backup engine mode: python, native, or auto.",
     )
 
     class Meta:

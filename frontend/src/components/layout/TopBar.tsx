@@ -12,7 +12,7 @@ const titleMap: Record<string, string> = {
 export function TopBar() {
   const location = useLocation();
   const { user, signOut } = useAuth();
-  const title = titleMap[location.pathname] ?? "Backup Automation";
+  const title = titleMap[location.pathname] ?? "Database Hoarder";
 
   return (
     <header className="sticky top-0 z-30 border-b border-border bg-white px-4 py-4 lg:px-8">

@@ -1,6 +1,7 @@
-import { createContext, ReactNode, useContext, useEffect, useMemo, useState } from "react";
+import { createContext, ReactNode, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 
-import { clearTokens, getMe, getStoredTokens, login, storeTokens } from "@/lib/api";
+import { clearTokens, getMe, getStoredTokens, login, registerUnauthorizedHandler, storeTokens } from "@/lib/api";
 import { CurrentUser } from "@/types/api";
 
 interface AuthContextValue {
@@ -17,6 +18,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<CurrentUser | null>(null);
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const navigate = useNavigate();
+  const location = useLocation();
+
+  const signOut = useCallback(() => {
+    clearTokens();
+    setAccessToken(null);
+    setUser(null);
+    if (location.pathname !== "/login") {
+      navigate("/login", { replace: true });
+    }
+  }, [location.pathname, navigate]);
 
   useEffect(() => {
     const bootstrap = async () => {
@@ -30,14 +42,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setAccessToken(tokens.access);
         setUser(me);
       } catch {
-        clearTokens();
+        signOut();
       } finally {
         setLoading(false);
       }
     };
 
     void bootstrap();
-  }, []);
+  }, [signOut]);
+
+  useEffect(() => {
+    registerUnauthorizedHandler(signOut);
+    return () => registerUnauthorizedHandler(null);
+  }, [signOut]);
 
   const value = useMemo<AuthContextValue>(
     () => ({
@@ -51,13 +68,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setAccessToken(tokens.access);
         setUser(me);
       },
-      signOut: () => {
-        clearTokens();
-        setAccessToken(null);
-        setUser(null);
-      },
+      signOut,
     }),
-    [user, accessToken, loading],
+    [user, accessToken, loading, signOut],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

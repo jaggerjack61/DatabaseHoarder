@@ -14,6 +14,28 @@ export interface CurrentUser {
   date_joined: string;
 }
 
+export interface UserAccount {
+  id: number;
+  username: string;
+  email: string;
+  role: UserRole;
+  is_active: boolean;
+  date_joined: string;
+  access_profile: number | null;
+  granted_storage_hosts: number[];
+  granted_databases: number[];
+  granted_database_configs: number[];
+}
+
+export interface AccessProfile {
+  id: number;
+  name: string;
+  description: string;
+  granted_storage_hosts: number[];
+  granted_databases: number[];
+  granted_database_configs: number[];
+}
+
 /** SSH server used to store replicated backup files. Unrelated to databases. */
 export interface StorageHost {
   id: number;
@@ -106,6 +128,25 @@ export interface TriggerBackupResponse {
   backup_id: number;
 }
 
+export interface TriggerReplicationResponse {
+  status: "replication_accepted";
+  backup_id: number;
+  storage_host_ids: number[];
+  count: number;
+}
+
+export interface BackupDeletionRequest {
+  id: number;
+  backup: number;
+  requested_by: number;
+  delete_replications: boolean;
+  status: "PENDING" | "APPROVED" | "DENIED";
+  reviewed_by: number | null;
+  reviewed_at: string | null;
+  admin_note: string;
+  created_at: string;
+}
+
 export interface LiveBackupsSummary {
   running_backups: number;
   pending_backups: number;
@@ -154,4 +195,5 @@ export interface DashboardMetrics {
 export interface SiteSettings {
   restore_throttle_rate: string;
   manual_backup_throttle_rate: string;
+  backup_execution_mode: "python" | "native" | "auto";
 }

@@ -90,3 +90,36 @@ class RestoreJob(models.Model):
 
     def __str__(self):
         return f"RestoreJob {self.id} ({self.status})"
+
+
+class DeletionRequestStatus(models.TextChoices):
+    PENDING = "PENDING", "Pending"
+    APPROVED = "APPROVED", "Approved"
+    DENIED = "DENIED", "Denied"
+
+
+class BackupDeletionRequest(models.Model):
+    backup = models.ForeignKey(Backup, on_delete=models.CASCADE, related_name="deletion_requests")
+    requested_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="backup_deletion_requests",
+    )
+    delete_replications = models.BooleanField(default=False)
+    status = models.CharField(max_length=16, choices=DeletionRequestStatus.choices, default=DeletionRequestStatus.PENDING)
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="reviewed_backup_deletion_requests",
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    admin_note = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ("-created_at", "-id")
+
+    def __str__(self):
+        return f"DeletionRequest {self.id} ({self.status})"

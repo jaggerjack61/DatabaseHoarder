@@ -12,11 +12,20 @@ import {
   SiteSettings,
   StorageHost,
   TriggerBackupResponse,
+  TriggerReplicationResponse,
+  BackupDeletionRequest,
+  UserAccount,
+  AccessProfile,
 } from "@/types/api";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
 const ACCESS_TOKEN_KEY = "dbauto.access";
 const REFRESH_TOKEN_KEY = "dbauto.refresh";
+let unauthorizedHandler: (() => void) | null = null;
+
+export function registerUnauthorizedHandler(handler: (() => void) | null) {
+  unauthorizedHandler = handler;
+}
 
 function buildHeaders(token?: string, isJson = true) {
   return {
@@ -35,6 +44,11 @@ async function request<T>(path: string, options: RequestInit = {}, token?: strin
   });
 
   if (!response.ok) {
+    if (token && (response.status === 401 || response.status === 403)) {
+      clearTokens();
+      unauthorizedHandler?.();
+    }
+
     let detail = "";
     try {
       const text = await response.text();
@@ -285,8 +299,81 @@ export function restoreBackup(
   );
 }
 
-export function deleteBackup(accessToken: string, backupId: number) {
-  return request<null>(`/api/backups/${backupId}/manual_delete/`, { method: "DELETE" }, accessToken);
+export function deleteBackup(
+  accessToken: string,
+  backupId: number,
+  payload: { confirmation_phrase: string; delete_replications: boolean },
+) {
+  return request<{ status?: string; backup_id?: number; deletion_request_id?: number }>(
+    `/api/backups/${backupId}/manual_delete/`,
+    { method: "DELETE", body: JSON.stringify(payload) },
+    accessToken,
+  );
+}
+
+export function replicateBackup(accessToken: string, backupId: number, storageHostIds: number[]) {
+  return request<TriggerReplicationResponse>(
+    `/api/backups/${backupId}/replicate/`,
+    { method: "POST", body: JSON.stringify({ storage_host_ids: storageHostIds }) },
+    accessToken,
+  );
+}
+
+export function getBackupDeletionRequests(accessToken: string) {
+  return request<BackupDeletionRequest[]>("/api/backups/deletion-requests/", { method: "GET" }, accessToken);
+}
+
+export function reviewBackupDeletionRequest(
+  accessToken: string,
+  requestId: number,
+  payload: { action: "APPROVED" | "DENIED"; admin_note?: string },
+) {
+  return request<{ status: "APPROVED" | "DENIED"; deletion_request_id: number }>(
+    `/api/backups/deletion-requests/${requestId}/review/`,
+    { method: "POST", body: JSON.stringify(payload) },
+    accessToken,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Users
+// ---------------------------------------------------------------------------
+
+export function getUsers(accessToken: string) {
+  return request<UserAccount[]>("/api/users/", { method: "GET" }, accessToken);
+}
+
+export function createUser(
+  accessToken: string,
+  payload: {
+    username: string;
+    email: string;
+    password: string;
+    role: "ADMIN" | "USER";
+    access_profile?: number | null;
+    granted_storage_hosts?: number[];
+    granted_databases?: number[];
+    granted_database_configs?: number[];
+  },
+) {
+  return request<UserAccount>("/api/users/", { method: "POST", body: JSON.stringify(payload) }, accessToken);
+}
+
+export function updateUser(
+  accessToken: string,
+  userId: number,
+  payload: Partial<{
+    username: string;
+    email: string;
+    role: "ADMIN" | "USER";
+    is_active: boolean;
+    access_profile: number | null;
+    granted_storage_hosts: number[];
+    granted_databases: number[];
+    granted_database_configs: number[];
+  }>,
+) {
+  return request<UserAccount>(`/api/users/${userId}/`, { method: "PATCH", body: JSON.stringify(payload) }, accessToken);
 }
 
 // ---------------------------------------------------------------------------
@@ -311,4 +398,39 @@ export function changePassword(accessToken: string, oldPassword: string, newPass
     { method: "POST", body: JSON.stringify({ old_password: oldPassword, new_password: newPassword }) },
     accessToken,
   );
+}
+
+export function getPasswordRules(accessToken: string) {
+  return request<{ rules: string[] }>("/api/users/password-rules/", { method: "GET" }, accessToken);
+}
+
+export function getAccessProfiles(accessToken: string) {
+  return request<AccessProfile[]>("/api/users/access-profiles/", { method: "GET" }, accessToken);
+}
+
+export function createAccessProfile(
+  accessToken: string,
+  payload: {
+    name: string;
+    description?: string;
+    granted_storage_hosts?: number[];
+    granted_databases?: number[];
+    granted_database_configs?: number[];
+  },
+) {
+  return request<AccessProfile>("/api/users/access-profiles/", { method: "POST", body: JSON.stringify(payload) }, accessToken);
+}
+
+export function updateAccessProfile(
+  accessToken: string,
+  id: number,
+  payload: Partial<{
+    name: string;
+    description: string;
+    granted_storage_hosts: number[];
+    granted_databases: number[];
+    granted_database_configs: number[];
+  }>,
+) {
+  return request<AccessProfile>(`/api/users/access-profiles/${id}/`, { method: "PATCH", body: JSON.stringify(payload) }, accessToken);
 }

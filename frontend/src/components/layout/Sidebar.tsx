@@ -2,6 +2,7 @@ import { motion, useReducedMotion } from "framer-motion";
 import { Activity, Database, HardDrive, LayoutDashboard, Settings } from "lucide-react";
 import { NavLink } from "react-router-dom";
 
+import { useAuth } from "@/context/AuthContext";
 import { defaultTransition } from "@/lib/motion";
 import { cn } from "@/lib/utils";
 
@@ -15,13 +16,15 @@ const navItems = [
 
 export function Sidebar() {
   const reduceMotion = useReducedMotion();
+  const { user } = useAuth();
+  const visibleItems = navItems.filter((item) => (item.to === "/settings" ? user?.role === "ADMIN" : true));
 
   return (
     <aside className="hidden w-72 flex-col border-r border-foreground/20 bg-foreground p-6 text-white lg:flex">
-      <p className="font-mono text-xs uppercase tracking-[0.22em] text-white/70">Backup Automation</p>
+      <p className="font-mono text-xs uppercase tracking-[0.22em] text-white/70">Database Hoarder</p>
       <h1 className="mt-3 font-headline text-3xl">Control Plane</h1>
       <nav className="mt-8 space-y-2">
-        {navItems.map((item) => (
+        {visibleItems.map((item) => (
           <NavLink
             key={item.to}
             to={item.to}

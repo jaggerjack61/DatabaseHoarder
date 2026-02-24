@@ -1,5 +1,6 @@
 from rest_framework import serializers
 
+from .access import accessible_configs_for_user, accessible_databases_for_user, accessible_storage_hosts_for_user
 from .models import Database, DatabaseConfig, ReplicationPolicy, StorageHost
 
 
@@ -74,8 +75,8 @@ class DatabaseConfigSerializer(serializers.ModelSerializer):
 
     def validate_database(self, value):
         user = self.context["request"].user
-        if not user.is_admin and value.owner_id != user.id:
-            raise serializers.ValidationError("Cannot create config for another user's database.")
+        if not user.is_admin and not accessible_databases_for_user(user).filter(id=value.id).exists():
+            raise serializers.ValidationError("Cannot create config for a database you cannot access.")
         return value
 
 
@@ -100,8 +101,8 @@ class ReplicationPolicySerializer(serializers.ModelSerializer):
         if not user.is_admin:
             db_config = attrs["database_config"]
             storage_host = attrs["storage_host"]
-            if db_config.database.owner_id != user.id:
-                raise serializers.ValidationError("Cannot create policy for another user's database config.")
-            if storage_host.owner_id != user.id:
-                raise serializers.ValidationError("Cannot replicate to another user's storage host.")
+            if not accessible_configs_for_user(user).filter(id=db_config.id).exists():
+                raise serializers.ValidationError("Cannot create policy for a database config you cannot access.")
+            if not accessible_storage_hosts_for_user(user).filter(id=storage_host.id).exists():
+                raise serializers.ValidationError("Cannot replicate to a storage host you cannot access.")
         return attrs

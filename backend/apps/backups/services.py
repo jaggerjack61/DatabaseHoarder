@@ -2,8 +2,8 @@
 Backup, restore, and replication services.
 
 Backup strategy:
-  - PostgreSQL: pg_dump -Fc  (custom format, compressed)
-  - MySQL:      mysqldump --single-transaction --routines --triggers
+    - PostgreSQL/MySQL: Python-native logical dump (default) or native CLI tools
+        (`pg_dump`/`mysqldump`) depending on BACKUP_EXECUTION_MODE.
   - SQLite:     binary copy of the .db file (path supplied as the host field)
 
 Replication:
@@ -12,18 +12,24 @@ Replication:
   ReplicationPolicy exists for the DatabaseConfig.
 
 Restore:
-  - PostgreSQL: pg_restore
-  - MySQL:      mysql < dump
+    - PostgreSQL/MySQL: Python-native restore for `.json.gz` logical dumps,
+        native tools for legacy `.dump`/`.sql.gz` backups.
   - SQLite:     file copy back to the target path
 """
 
 import gzip
 import hashlib
+import json
 import os
 import shutil
 import subprocess
-from datetime import timedelta
+from base64 import b64decode, b64encode
+from datetime import date, datetime, time, timedelta
+from decimal import Decimal
 from pathlib import Path
+
+import psycopg
+import pymysql
 
 from django.conf import settings
 from django.db.models import Max
@@ -59,17 +65,41 @@ def _sha256(path: Path) -> str:
     return h.hexdigest()
 
 
+def _backup_mode() -> str:
+    mode = None
+    try:
+        from apps.common.models import SiteSettings
+
+        mode = SiteSettings.get().backup_execution_mode
+    except Exception:
+        mode = str(getattr(settings, "BACKUP_EXECUTION_MODE", "auto"))
+
+    mode = str(mode).lower().strip()
+    if mode not in {"python", "native", "auto"}:
+        return "auto"
+    return mode
+
+
+def _use_native_tool(binary_name: str) -> bool:
+    mode = _backup_mode()
+    if mode == "python":
+        return False
+    if mode == "native":
+        return True
+    return shutil.which(binary_name) is not None
+
+
 def get_backup_preflight_error(config: DatabaseConfig) -> str | None:
     """Return a user-friendly prerequisite error message, or None if checks pass."""
     db = config.database
 
     if db.db_type == DatabaseType.POSTGRES:
-        if shutil.which("pg_dump") is None:
+        if _use_native_tool("pg_dump") and shutil.which("pg_dump") is None:
             return "pg_dump is not installed or not available in PATH on the worker host."
         return None
 
     if db.db_type == DatabaseType.MYSQL:
-        if shutil.which("mysqldump") is None:
+        if _use_native_tool("mysqldump") and shutil.which("mysqldump") is None:
             return "mysqldump is not installed or not available in PATH on the worker host."
         return None
 
@@ -86,7 +116,201 @@ def get_backup_preflight_error(config: DatabaseConfig) -> str | None:
 # Backup implementations
 # ---------------------------------------------------------------------------
 
+def _serialize_value(value):
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, Decimal):
+        return {"__type": "decimal", "value": str(value)}
+    if isinstance(value, datetime):
+        return {"__type": "datetime", "value": value.isoformat()}
+    if isinstance(value, date):
+        return {"__type": "date", "value": value.isoformat()}
+    if isinstance(value, time):
+        return {"__type": "time", "value": value.isoformat()}
+    if isinstance(value, (bytes, bytearray)):
+        return {"__type": "bytes", "value": b64encode(bytes(value)).decode("ascii")}
+    return {"__type": "string", "value": str(value)}
+
+
+def _deserialize_value(value):
+    if not isinstance(value, dict) or "__type" not in value:
+        return value
+    value_type = value["__type"]
+    raw = value.get("value")
+    if value_type == "decimal":
+        return Decimal(raw)
+    if value_type == "datetime":
+        return datetime.fromisoformat(raw)
+    if value_type == "date":
+        return date.fromisoformat(raw)
+    if value_type == "time":
+        return time.fromisoformat(raw)
+    if value_type == "bytes":
+        return b64decode(raw)
+    return str(raw)
+
+
+def _backup_postgres_python(config: DatabaseConfig) -> Path:
+    db = config.database
+    out_path = _backup_filename(config, "json.gz")
+
+    tables = []
+    with psycopg.connect(
+        host=db.host,
+        port=db.port,
+        user=db.username,
+        password=db.get_password(),
+        dbname=db.name,
+    ) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT n.nspname AS schema_name, c.relname AS table_name
+                FROM pg_class c
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE c.relkind = 'r'
+                  AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+                ORDER BY n.nspname, c.relname
+                """
+            )
+            table_rows = cur.fetchall()
+
+        for schema_name, table_name in table_rows:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        a.attname AS column_name,
+                        pg_catalog.format_type(a.atttypid, a.atttypmod) AS column_type,
+                        a.attnotnull AS not_null,
+                        pg_get_expr(ad.adbin, ad.adrelid) AS column_default
+                    FROM pg_attribute a
+                    JOIN pg_class c ON a.attrelid = c.oid
+                    JOIN pg_namespace n ON c.relnamespace = n.oid
+                    LEFT JOIN pg_attrdef ad ON a.attrelid = ad.adrelid AND a.attnum = ad.adnum
+                    WHERE n.nspname = %s
+                      AND c.relname = %s
+                      AND a.attnum > 0
+                      AND NOT a.attisdropped
+                    ORDER BY a.attnum
+                    """,
+                    (schema_name, table_name),
+                )
+                columns = [
+                    {
+                        "name": column_name,
+                        "column_type": column_type,
+                        "not_null": bool(not_null),
+                        "column_default": column_default,
+                    }
+                    for (column_name, column_type, not_null, column_default) in cur.fetchall()
+                ]
+
+                quoted_schema = schema_name.replace('"', '""')
+                quoted_table = table_name.replace('"', '""')
+                cur.execute(f'SELECT * FROM "{quoted_schema}"."{quoted_table}"')
+                rows = [
+                    [_serialize_value(value) for value in row]
+                    for row in cur.fetchall()
+                ]
+
+            tables.append(
+                {
+                    "schema": schema_name,
+                    "name": table_name,
+                    "columns": columns,
+                    "rows": rows,
+                }
+            )
+
+    payload = {
+        "format": "dbauto-python-logical-v1",
+        "db_type": DatabaseType.POSTGRES,
+        "database": db.name,
+        "tables": tables,
+    }
+    with gzip.open(out_path, "wt", encoding="utf-8") as fh:
+        json.dump(payload, fh, ensure_ascii=False)
+    return out_path
+
+
+def _backup_mysql_python(config: DatabaseConfig) -> Path:
+    db = config.database
+    out_path = _backup_filename(config, "json.gz")
+
+    tables = []
+    conn = pymysql.connect(
+        host=db.host,
+        port=db.port,
+        user=db.username,
+        password=db.get_password(),
+        database=db.name,
+        charset="utf8mb4",
+        cursorclass=pymysql.cursors.Cursor,
+        autocommit=True,
+    )
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT table_name
+                FROM information_schema.tables
+                WHERE table_schema = %s
+                  AND table_type = 'BASE TABLE'
+                ORDER BY table_name
+                """,
+                (db.name,),
+            )
+            table_rows = cur.fetchall()
+
+        for (table_name,) in table_rows:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT column_name, column_type, is_nullable, column_default, extra
+                    FROM information_schema.columns
+                    WHERE table_schema = %s AND table_name = %s
+                    ORDER BY ordinal_position
+                    """,
+                    (db.name, table_name),
+                )
+                columns = [
+                    {
+                        "name": column_name,
+                        "column_type": column_type,
+                        "not_null": is_nullable == "NO",
+                        "column_default": column_default,
+                        "extra": extra,
+                    }
+                    for (column_name, column_type, is_nullable, column_default, extra) in cur.fetchall()
+                ]
+
+                quoted_table = table_name.replace("`", "``")
+                cur.execute(f"SELECT * FROM `{quoted_table}`")
+                rows = [
+                    [_serialize_value(value) for value in row]
+                    for row in cur.fetchall()
+                ]
+
+            tables.append({"name": table_name, "columns": columns, "rows": rows})
+
+    finally:
+        conn.close()
+
+    payload = {
+        "format": "dbauto-python-logical-v1",
+        "db_type": DatabaseType.MYSQL,
+        "database": db.name,
+        "tables": tables,
+    }
+    with gzip.open(out_path, "wt", encoding="utf-8") as fh:
+        json.dump(payload, fh, ensure_ascii=False)
+    return out_path
+
 def _backup_postgres(config: DatabaseConfig) -> Path:
+    if not _use_native_tool("pg_dump"):
+        return _backup_postgres_python(config)
+
     db = config.database
     out_path = _backup_filename(config, "dump")
 
@@ -107,6 +331,9 @@ def _backup_postgres(config: DatabaseConfig) -> Path:
 
 
 def _backup_mysql(config: DatabaseConfig) -> Path:
+    if not _use_native_tool("mysqldump"):
+        return _backup_mysql_python(config)
+
     db = config.database
     out_path = _backup_filename(config, "sql.gz")
 
@@ -151,6 +378,9 @@ def _backup_sqlite(config: DatabaseConfig) -> Path:
 # ---------------------------------------------------------------------------
 
 def _restore_postgres(config: DatabaseConfig, backup_path: Path, target_db: str):
+    if backup_path.suffixes[-2:] == [".json", ".gz"]:
+        return _restore_postgres_python(config, backup_path, target_db)
+
     db = config.database
     env = {**os.environ, "PGPASSWORD": db.get_password()}
 
@@ -181,6 +411,9 @@ def _restore_postgres(config: DatabaseConfig, backup_path: Path, target_db: str)
 
 
 def _restore_mysql(config: DatabaseConfig, backup_path: Path, target_db: str):
+    if backup_path.suffixes[-2:] == [".json", ".gz"]:
+        return _restore_mysql_python(config, backup_path, target_db)
+
     db = config.database
     env = {**os.environ, "MYSQL_PWD": db.get_password()}
 
@@ -216,6 +449,140 @@ def _restore_mysql(config: DatabaseConfig, backup_path: Path, target_db: str):
 
 def _restore_sqlite(config: DatabaseConfig, backup_path: Path, target_path: str):
     shutil.copy2(backup_path, target_path)
+
+
+def _restore_postgres_python(config: DatabaseConfig, backup_path: Path, target_db: str):
+    db = config.database
+    with gzip.open(backup_path, "rt", encoding="utf-8") as fh:
+        payload = json.load(fh)
+
+    if payload.get("db_type") != DatabaseType.POSTGRES:
+        raise RuntimeError("Backup format/database mismatch for PostgreSQL restore.")
+
+    with psycopg.connect(
+        host=db.host,
+        port=db.port,
+        user=db.username,
+        password=db.get_password(),
+        dbname="postgres",
+        autocommit=True,
+    ) as admin_conn:
+        with admin_conn.cursor() as cur:
+            quoted_target = target_db.replace('"', '""')
+            cur.execute(f'SELECT 1 FROM pg_database WHERE datname = %s', (target_db,))
+            exists = cur.fetchone() is not None
+            if not exists:
+                cur.execute(f'CREATE DATABASE "{quoted_target}"')
+
+    with psycopg.connect(
+        host=db.host,
+        port=db.port,
+        user=db.username,
+        password=db.get_password(),
+        dbname=target_db,
+    ) as conn:
+        with conn.cursor() as cur:
+            for table in payload.get("tables", []):
+                schema_name = table["schema"]
+                table_name = table["name"]
+                columns = table.get("columns", [])
+
+                quoted_schema = schema_name.replace('"', '""')
+                quoted_table = table_name.replace('"', '""')
+                cur.execute(f'CREATE SCHEMA IF NOT EXISTS "{quoted_schema}"')
+                cur.execute(f'DROP TABLE IF EXISTS "{quoted_schema}"."{quoted_table}" CASCADE')
+
+                column_defs = []
+                for column in columns:
+                    quoted_col = column["name"].replace('"', '""')
+                    pieces = [f'"{quoted_col}"', column["column_type"]]
+                    if column.get("not_null"):
+                        pieces.append("NOT NULL")
+                    if column.get("column_default") is not None:
+                        pieces.append(f"DEFAULT {column['column_default']}")
+                    column_defs.append(" ".join(pieces))
+
+                create_sql = f'CREATE TABLE "{quoted_schema}"."{quoted_table}" ({", ".join(column_defs)})'
+                cur.execute(create_sql)
+
+                rows = table.get("rows", [])
+                if rows:
+                    quoted_cols = ", ".join(f'"{column["name"].replace("\"", "\"\"")}"' for column in columns)
+                    placeholders = ", ".join(["%s"] * len(columns))
+                    insert_sql = f'INSERT INTO "{quoted_schema}"."{quoted_table}" ({quoted_cols}) VALUES ({placeholders})'
+                    converted_rows = [tuple(_deserialize_value(value) for value in row) for row in rows]
+                    cur.executemany(insert_sql, converted_rows)
+        conn.commit()
+
+
+def _restore_mysql_python(config: DatabaseConfig, backup_path: Path, target_db: str):
+    db = config.database
+    with gzip.open(backup_path, "rt", encoding="utf-8") as fh:
+        payload = json.load(fh)
+
+    if payload.get("db_type") != DatabaseType.MYSQL:
+        raise RuntimeError("Backup format/database mismatch for MySQL restore.")
+
+    admin_conn = pymysql.connect(
+        host=db.host,
+        port=db.port,
+        user=db.username,
+        password=db.get_password(),
+        charset="utf8mb4",
+        cursorclass=pymysql.cursors.Cursor,
+        autocommit=True,
+    )
+    try:
+        with admin_conn.cursor() as cur:
+            quoted_target = target_db.replace("`", "``")
+            cur.execute(f"CREATE DATABASE IF NOT EXISTS `{quoted_target}`")
+    finally:
+        admin_conn.close()
+
+    conn = pymysql.connect(
+        host=db.host,
+        port=db.port,
+        user=db.username,
+        password=db.get_password(),
+        database=target_db,
+        charset="utf8mb4",
+        cursorclass=pymysql.cursors.Cursor,
+        autocommit=False,
+    )
+    try:
+        with conn.cursor() as cur:
+            for table in payload.get("tables", []):
+                table_name = table["name"]
+                columns = table.get("columns", [])
+
+                quoted_table = table_name.replace("`", "``")
+                cur.execute(f"DROP TABLE IF EXISTS `{quoted_table}`")
+
+                column_defs = []
+                for column in columns:
+                    quoted_col = column["name"].replace("`", "``")
+                    pieces = [f"`{quoted_col}`", column["column_type"]]
+                    if column.get("not_null"):
+                        pieces.append("NOT NULL")
+                    else:
+                        pieces.append("NULL")
+                    if column.get("extra"):
+                        pieces.append(column["extra"])
+                    column_defs.append(" ".join(pieces))
+
+                create_sql = f"CREATE TABLE `{quoted_table}` ({', '.join(column_defs)})"
+                cur.execute(create_sql)
+
+                rows = table.get("rows", [])
+                if rows:
+                    quoted_cols = ", ".join(f"`{column['name'].replace('`', '``')}`" for column in columns)
+                    placeholders = ", ".join(["%s"] * len(columns))
+                    insert_sql = f"INSERT INTO `{quoted_table}` ({quoted_cols}) VALUES ({placeholders})"
+                    converted_rows = [tuple(_deserialize_value(value) for value in row) for row in rows]
+                    cur.executemany(insert_sql, converted_rows)
+        conn.commit()
+    finally:
+        conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -265,7 +632,12 @@ def execute_backup(config_id: int, backup_id: int | None = None):
         backup.checksum = _sha256(out_path)
         backup.status = BackupStatus.SUCCESS
         backup.completed_at = timezone.now()
-        backup.metadata = {"db_type": db.db_type, "db_name": db.name}
+        backup.metadata = {
+            "db_type": db.db_type,
+            "db_name": db.name,
+            "backup_engine": "native" if out_path.suffix in {".dump", ".gz"} and ".json" not in "".join(out_path.suffixes) else "python",
+            "backup_mode": _backup_mode(),
+        }
         backup.save(update_fields=["file_path", "file_size", "checksum", "status", "completed_at", "metadata"])
 
         config.last_backup_at = backup.completed_at
@@ -448,6 +820,46 @@ def execute_replication(backup_id: int, storage_host_id: int, remote_dir: str):
             metadata={"storage_host_id": storage_host.id, "error": str(exc)},
         )
         raise
+
+
+def delete_backup_artifacts(backup: Backup, delete_replications: bool = False):
+    """
+    Delete local backup file and optionally attempt deletion of replicated remote files.
+    Remote cleanup failures are ignored so backup deletion can still proceed.
+    """
+    local_path = Path(backup.file_path)
+    if local_path.exists() and str(local_path).startswith(str(settings.MEDIA_ROOT)):
+        local_path.unlink()
+
+    if not delete_replications:
+        return
+
+    try:
+        import paramiko
+    except Exception:
+        return
+
+    replications = backup.replications.select_related("storage_host").all()
+    for replication in replications:
+        if not replication.remote_path:
+            continue
+        try:
+            host = replication.storage_host
+            client = paramiko.SSHClient()
+            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            client.connect(
+                hostname=host.address,
+                port=host.ssh_port,
+                username=host.username,
+                password=host.get_password(),
+                timeout=30,
+            )
+            sftp = client.open_sftp()
+            sftp.remove(replication.remote_path)
+            sftp.close()
+            client.close()
+        except Exception:
+            continue
 
 
 # ---------------------------------------------------------------------------

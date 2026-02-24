@@ -1,21 +1,30 @@
 from django.contrib.auth import get_user_model
+from django.contrib.auth.password_validation import password_validators_help_texts, validate_password
+from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework.decorators import action
 from rest_framework import status, viewsets
-from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
+from .models import AccessProfile
 from .permissions import IsAdminRole
-from .serializers import UserCreateSerializer, UserSerializer
+from .serializers import AccessProfileSerializer, UserCreateSerializer, UserSerializer
 
 User = get_user_model()
 
 
 class UserViewSet(viewsets.ModelViewSet):
-    queryset = User.objects.all().order_by("id")
+    queryset = User.objects.prefetch_related(
+        "access_profile",
+        "access_profile__granted_storage_hosts",
+        "access_profile__granted_databases",
+        "access_profile__granted_database_configs",
+        "granted_storage_hosts",
+        "granted_databases",
+        "granted_database_configs",
+    ).all().order_by("id")
 
     def get_permissions(self):
-        if self.action == "create":
-            return [AllowAny()]
         if self.action in ("me", "change_password"):
             return [IsAuthenticated()]
         return [IsAuthenticated(), IsAdminRole()]
@@ -41,12 +50,28 @@ class UserViewSet(viewsets.ModelViewSet):
                 {"detail": "Current password is incorrect."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        if len(new_password) < 8:
+        try:
+            validate_password(new_password, user=user)
+        except DjangoValidationError as exc:
             return Response(
-                {"detail": "New password must be at least 8 characters."},
+                {"detail": " ".join(exc.messages)},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
         user.set_password(new_password)
         user.save()
         return Response({"detail": "Password updated successfully."})
+
+    @action(detail=False, methods=["get"], permission_classes=[IsAuthenticated], url_path="password-rules")
+    def password_rules(self, request):
+        return Response({"rules": password_validators_help_texts()})
+
+
+class AccessProfileViewSet(viewsets.ModelViewSet):
+    queryset = AccessProfile.objects.prefetch_related(
+        "granted_storage_hosts",
+        "granted_databases",
+        "granted_database_configs",
+    ).all()
+    serializer_class = AccessProfileSerializer
+    permission_classes = [IsAuthenticated, IsAdminRole]

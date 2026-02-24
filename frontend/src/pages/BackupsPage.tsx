@@ -9,15 +9,18 @@ import { Table, TableWrapper } from "@/components/ui/Table";
 import { useAuth } from "@/context/AuthContext";
 import {
   deleteBackup,
+  getBackupDeletionRequests,
   getBackups,
   getConfigs,
   getDatabases,
   getReplicationPolicies,
   getStorageHosts,
+  replicateBackup,
+  reviewBackupDeletionRequest,
   restoreBackup,
   triggerBackup,
 } from "@/lib/api";
-import { Backup, Database, DatabaseConfig, ReplicationPolicy, StorageHost } from "@/types/api";
+import { Backup, BackupDeletionRequest, Database, DatabaseConfig, ReplicationPolicy, StorageHost } from "@/types/api";
 
 function formatBytes(bytes: number) {
   if (!bytes) return "0 B";
@@ -93,7 +96,7 @@ function findNextReplicationOccurrence(policy: ReplicationPolicy, now: Date, nex
 }
 
 export function BackupsPage() {
-  const { accessToken } = useAuth();
+  const { accessToken, user } = useAuth();
 
   // restore modal
   const [restoreOpen, setRestoreOpen] = useState(false);
@@ -102,10 +105,24 @@ export function BackupsPage() {
   const [confirmationPhrase, setConfirmationPhrase] = useState("");
   const [restoreError, setRestoreError] = useState<string | null>(null);
 
+  // manual replication modal
+  const [replicationOpen, setReplicationOpen] = useState(false);
+  const [replicationBackup, setReplicationBackup] = useState<Backup | null>(null);
+  const [selectedReplicationHosts, setSelectedReplicationHosts] = useState<Set<number>>(new Set());
+  const [replicationError, setReplicationError] = useState<string | null>(null);
+  const [replicating, setReplicating] = useState(false);
+
   // delete confirmation modal
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<"single" | "bulk">("single");
   const [deleting, setDeleting] = useState(false);
+  const [deletePhrase, setDeletePhrase] = useState("");
+  const [deleteReplications, setDeleteReplications] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  // admin deletion request queue
+  const [deletionRequests, setDeletionRequests] = useState<BackupDeletionRequest[]>([]);
+  const [reviewingRequestId, setReviewingRequestId] = useState<number | null>(null);
 
   // multi-select
   const [checkedIds, setCheckedIds] = useState<Set<number>>(new Set());
@@ -150,6 +167,10 @@ export function BackupsPage() {
       setDatabases(dbs);
       setStorageHosts(shs);
       setReplicationPolicies(policies);
+      if (user?.role === "ADMIN") {
+        const requests = await getBackupDeletionRequests(accessToken);
+        setDeletionRequests(requests);
+      }
       if (cfgs.length > 0 && selectedConfigId === 0) {
         setSelectedConfigId(cfgs[0].id);
       }
@@ -160,7 +181,7 @@ export function BackupsPage() {
     }
   };
 
-  useEffect(() => { void loadData(); }, [accessToken]);
+  useEffect(() => { void loadData(); }, [accessToken, user?.role]);
 
   // ── restore ────────────────────────────────────────────────────────────────
   const openRestore = (backup: Backup) => {
@@ -193,31 +214,121 @@ export function BackupsPage() {
     }
   };
 
+  // ── manual replication ────────────────────────────────────────────────────
+  const replicationHostOptions = useMemo(() => {
+    if (!replicationBackup) return [];
+    const allowedPolicies = replicationPolicies.filter(
+      (policy) => policy.enabled && policy.database_config === replicationBackup.database_config,
+    );
+    return allowedPolicies.map((policy) => ({
+      storageHostId: policy.storage_host,
+      remotePath: policy.remote_path,
+      hostName: storageHostById.get(policy.storage_host)?.name ?? `Host ${policy.storage_host}`,
+    }));
+  }, [replicationBackup, replicationPolicies, storageHostById]);
+
+  const openReplication = (backup: Backup) => {
+    setReplicationBackup(backup);
+    const defaultHostIds = replicationPolicies
+      .filter((policy) => policy.enabled && policy.database_config === backup.database_config)
+      .map((policy) => policy.storage_host);
+    setSelectedReplicationHosts(new Set(defaultHostIds));
+    setReplicationError(null);
+    setReplicationOpen(true);
+  };
+
+  const toggleReplicationHost = (hostId: number) => {
+    setSelectedReplicationHosts((prev) => {
+      const next = new Set(prev);
+      if (next.has(hostId)) {
+        next.delete(hostId);
+      } else {
+        next.add(hostId);
+      }
+      return next;
+    });
+  };
+
+  const submitReplication = async () => {
+    if (!accessToken || !replicationBackup) return;
+    setReplicationError(null);
+    const selectedIds = Array.from(selectedReplicationHosts);
+    if (selectedIds.length === 0) {
+      setReplicationError("Select at least one replication host.");
+      return;
+    }
+
+    setReplicating(true);
+    try {
+      await replicateBackup(accessToken, replicationBackup.id, selectedIds);
+      setReplicationOpen(false);
+      await loadData();
+      setTriggerMessage(`Manual replication accepted for backup #${replicationBackup.id}.`);
+    } catch (err) {
+      setReplicationError(err instanceof Error ? err.message : "Replication request failed.");
+    } finally {
+      setReplicating(false);
+    }
+  };
+
   // ── delete ─────────────────────────────────────────────────────────────────
   const openDeleteSingle = (backup: Backup) => {
     setCheckedIds(new Set([backup.id]));
     setDeleteTarget("single");
+    setDeletePhrase("");
+    setDeleteReplications(false);
+    setDeleteError(null);
     setDeleteOpen(true);
   };
 
   const openDeleteBulk = () => {
     setDeleteTarget("bulk");
+    setDeletePhrase("");
+    setDeleteReplications(false);
+    setDeleteError(null);
     setDeleteOpen(true);
   };
 
   const confirmDelete = async () => {
     if (!accessToken) return;
+    if (deletePhrase.trim().toLowerCase() !== "delete") {
+      setDeleteError("Type delete to confirm.");
+      return;
+    }
     setDeleting(true);
+    setDeleteError(null);
     try {
-      await Promise.all([...checkedIds].map((id) => deleteBackup(accessToken, id)));
+      await Promise.all(
+        [...checkedIds].map((id) =>
+          deleteBackup(accessToken, id, {
+            confirmation_phrase: deletePhrase,
+            delete_replications: deleteReplications,
+          }),
+        ),
+      );
       setCheckedIds(new Set());
       setDeleteOpen(false);
+      if (user?.role !== "ADMIN") {
+        setTriggerMessage("Deletion request submitted to admin.");
+      }
       await loadData();
-    } catch {
-      setError("One or more deletions failed.");
-      setDeleteOpen(false);
+    } catch (err) {
+      setDeleteError(err instanceof Error ? err.message : "One or more deletions failed.");
     } finally {
       setDeleting(false);
+    }
+  };
+
+  const reviewDeletionRequest = async (requestId: number, action: "APPROVED" | "DENIED") => {
+    if (!accessToken) return;
+    setReviewingRequestId(requestId);
+    try {
+      await reviewBackupDeletionRequest(accessToken, requestId, { action });
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to review deletion request.");
+    } finally {
+      setReviewingRequestId(null);
     }
   };
 
@@ -357,6 +468,44 @@ export function BackupsPage() {
         </div>
       )}
 
+      {user?.role === "ADMIN" && (
+        <div className="mb-4 rounded-2xl border border-border bg-white p-4 shadow-soft">
+          <p className="text-sm font-medium text-foreground">Deletion Requests</p>
+          {deletionRequests.filter((request) => request.status === "PENDING").length === 0 ? (
+            <p className="mt-2 text-xs text-muted-foreground">No pending deletion requests.</p>
+          ) : (
+            <div className="mt-3 space-y-2">
+              {deletionRequests
+                .filter((request) => request.status === "PENDING")
+                .map((request) => (
+                  <div key={request.id} className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-border px-3 py-2">
+                    <p className="text-xs text-foreground">
+                      Request #{request.id} · Backup #{request.backup} · Delete replications: {request.delete_replications ? "Yes" : "No"}
+                    </p>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        disabled={reviewingRequestId === request.id}
+                        onClick={() => void reviewDeletionRequest(request.id, "DENIED")}
+                      >
+                        Deny
+                      </Button>
+                      <Button
+                        size="sm"
+                        disabled={reviewingRequestId === request.id}
+                        onClick={() => void reviewDeletionRequest(request.id, "APPROVED")}
+                      >
+                        Approve
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+            </div>
+          )}
+        </div>
+      )}
+
       {loading && <p className="mb-4 text-sm text-muted-foreground">Loading backups...</p>}
       {error && <p className="mb-4 text-sm text-failure">{error}</p>}
 
@@ -442,6 +591,9 @@ export function BackupsPage() {
                     {row.status === "SUCCESS" && (
                       <Button size="sm" variant="secondary" onClick={() => openRestore(row)}>Restore</Button>
                     )}
+                    {row.status === "SUCCESS" && (
+                      <Button size="sm" variant="secondary" onClick={() => openReplication(row)}>Replicate</Button>
+                    )}
                     <Button size="sm" variant="danger" onClick={() => openDeleteSingle(row)}>Delete</Button>
                   </div>
                 </td>
@@ -487,17 +639,85 @@ export function BackupsPage() {
         </div>
       </Modal>
 
+      {/* ── manual replication modal ── */}
+      <Modal open={replicationOpen} onClose={() => !replicating && setReplicationOpen(false)} title="Manual Replication">
+        <p className="text-sm text-muted-foreground">
+          Select one or more configured replication hosts for backup #{replicationBackup?.id}.
+        </p>
+
+        {replicationHostOptions.length === 0 ? (
+          <p className="mt-4 rounded-xl border border-border bg-muted/30 p-3 text-sm text-muted-foreground">
+            No enabled replication hosts are configured for this backup's database config.
+          </p>
+        ) : (
+          <div className="mt-4 max-h-72 space-y-2 overflow-y-auto rounded-xl border border-border p-3">
+            {replicationHostOptions.map((option) => (
+              <label key={option.storageHostId} className="flex cursor-pointer items-start gap-3 rounded-lg border border-border/70 px-3 py-2">
+                <input
+                  type="checkbox"
+                  className="mt-0.5 h-4 w-4 accent-accent"
+                  checked={selectedReplicationHosts.has(option.storageHostId)}
+                  onChange={() => toggleReplicationHost(option.storageHostId)}
+                />
+                <span className="flex flex-col">
+                  <span className="text-sm text-foreground">{option.hostName}</span>
+                  <span className="text-xs text-muted-foreground">Remote path: {option.remotePath}</span>
+                </span>
+              </label>
+            ))}
+          </div>
+        )}
+
+        {replicationError && <p className="mt-3 text-sm text-failure">{replicationError}</p>}
+
+        <div className="mt-6 flex justify-end gap-2">
+          <Button size="sm" variant="secondary" onClick={() => setReplicationOpen(false)} disabled={replicating}>Cancel</Button>
+          <Button
+            size="sm"
+            onClick={() => void submitReplication()}
+            disabled={replicating || replicationHostOptions.length === 0}
+          >
+            {replicating ? "Scheduling…" : "Start Replication"}
+          </Button>
+        </div>
+      </Modal>
+
       {/* ── delete confirmation modal ── */}
       <Modal open={deleteOpen} onClose={() => !deleting && setDeleteOpen(false)} title="Delete Backup">
         <p className="rounded-xl border border-failure/30 bg-failure/10 p-4 text-sm text-failure">
-          {deleteTarget === "bulk"
-            ? `Permanently delete ${deleteCount} backup file${deleteCount !== 1 ? "s" : ""}? This cannot be undone.`
-            : "Permanently delete this backup file? This cannot be undone."}
+          {user?.role === "ADMIN"
+            ? deleteTarget === "bulk"
+              ? `Permanently delete ${deleteCount} backup file${deleteCount !== 1 ? "s" : ""}? This cannot be undone.`
+              : "Permanently delete this backup file? This cannot be undone."
+            : deleteTarget === "bulk"
+              ? `Submit ${deleteCount} deletion request${deleteCount !== 1 ? "s" : ""} to admin?`
+              : "Submit a deletion request to admin for this backup?"}
         </p>
+
+        <div className="mt-4 space-y-3">
+          <label className="flex items-center gap-2 text-sm text-foreground">
+            <input
+              type="checkbox"
+              className="h-4 w-4 accent-accent"
+              checked={deleteReplications}
+              onChange={(e) => setDeleteReplications(e.target.checked)}
+            />
+            Delete replication artifacts as well
+          </label>
+          <Input placeholder="Type delete to confirm" value={deletePhrase} onChange={(e) => setDeletePhrase(e.target.value)} />
+          {deleteError && <p className="text-sm text-failure">{deleteError}</p>}
+        </div>
+
         <div className="mt-6 flex justify-end gap-2">
           <Button size="sm" variant="secondary" onClick={() => setDeleteOpen(false)} disabled={deleting}>Cancel</Button>
           <Button size="sm" variant="danger" onClick={() => void confirmDelete()} disabled={deleting}>
-            {deleting ? "Deleting…" : `Delete${deleteCount > 1 ? ` ${deleteCount}` : ""}`}
+            {deleting
+              ? user?.role === "ADMIN"
+                ? "Deleting…"
+                : "Submitting…"
+              : user?.role === "ADMIN"
+                ? `Delete${deleteCount > 1 ? ` ${deleteCount}` : ""}`
+                : `Request Delete${deleteCount > 1 ? ` ${deleteCount}` : ""}`}
           </Button>
         </div>
       </Modal>

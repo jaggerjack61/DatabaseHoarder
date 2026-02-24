@@ -6,6 +6,7 @@ from rest_framework.serializers import CharField, ChoiceField, IntegerField, Ser
 
 from apps.common.crypto import decrypt_text
 
+from .access import accessible_configs_for_user, accessible_databases_for_user, accessible_storage_hosts_for_user
 from .models import Database, DatabaseConfig, ReplicationPolicy, StorageHost
 from .serializers import (
     DatabaseConfigSerializer,
@@ -90,6 +91,12 @@ class OwnerFilteredQuerysetMixin:
         user = self.request.user
         if user.is_admin:
             return queryset
+        if queryset.model is StorageHost:
+            return queryset.filter(id__in=accessible_storage_hosts_for_user(user).values_list("id", flat=True))
+        if queryset.model is Database:
+            return queryset.filter(id__in=accessible_databases_for_user(user).values_list("id", flat=True))
+        if queryset.model is DatabaseConfig:
+            return queryset.filter(id__in=accessible_configs_for_user(user).values_list("id", flat=True))
         return queryset.filter(**{self.owner_lookup: user})
 
 
@@ -196,3 +203,12 @@ class ReplicationPolicyViewSet(OwnerFilteredQuerysetMixin, viewsets.ModelViewSet
     serializer_class = ReplicationPolicySerializer
     permission_classes = (IsAuthenticated,)
     owner_lookup = "database_config__database__owner"
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        user = self.request.user
+        if user.is_admin:
+            return queryset
+        accessible_config_ids = accessible_configs_for_user(user).values_list("id", flat=True)
+        accessible_host_ids = accessible_storage_hosts_for_user(user).values_list("id", flat=True)
+        return queryset.filter(database_config_id__in=accessible_config_ids, storage_host_id__in=accessible_host_ids)

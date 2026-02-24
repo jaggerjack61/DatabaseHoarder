@@ -1,4 +1,4 @@
-# DBAuto
+# Database Hoarder
 
 A multi-tenant Database Backup Automation platform.
 
@@ -46,6 +46,8 @@ Run workers in separate terminals (also from `backend/` with the venv active):
 |---|---|
 | `POST /api/auth/token/` | Obtain JWT token pair |
 | `POST /api/auth/token/refresh/` | Refresh access token |
+| `GET /api/users/password-rules/` | List active password requirements |
+| `GET/POST /api/users/access-profiles/` | Access profile CRUD |
 | `GET/POST /api/hosts/storage-hosts/` | Storage host CRUD |
 | `GET/POST /api/hosts/databases/` | Database CRUD |
 | `GET/POST /api/hosts/configs/` | Backup config CRUD |
@@ -61,13 +63,16 @@ Run workers in separate terminals (also from `backend/` with the venv active):
 - **Databases**: DB connection CRUD (PostgreSQL, MySQL, SQLite) with encrypted password storage
 - **Backup Configs**: Per-database schedule + retention, with Celery beat scheduler
 - **Replication Policies**: Per-config SFTP replication to storage hosts (opt-in, post-backup)
-- **Real backup execution**: `pg_dump -Fc` (PostgreSQL), `mysqldump | gzip` (MySQL), `shutil.copy2` (SQLite)
-- **Real restore execution**: `pg_restore` / `mysql` / file copy, run asynchronously via Celery
+- **Password UX**: Settings page now displays server-enforced password rules before submit, and password changes use Django password validators for clear errors.
+- **Scalable access rights**: Reusable Access Profiles can be assigned to users and grant hosts/databases/configs in bulk, with optional per-user direct grant overrides.
+- **Backup execution**: Configurable engine mode for PostgreSQL/MySQL — Python modules, Native CLI, or Auto (prefer native). Native mode provides production-grade parity with `pg_dump`/`mysqldump` and `pg_restore`/`mysql`.
+- **SQLite backup/restore**: `shutil.copy2` file copy, run asynchronously via Celery
 - **Real SFTP replication**: paramiko-based upload with `BackupReplication` status tracking per backup per host
 - Retention enforcement with most-recent-success protection
 - Audit logging for backup / restore / replication / deletion events
 - Dashboard metrics with Redis cache
 - Owner-filtered access with admin override
+- Profile-based + direct-grant resource authorization through a single access filter path
 
 ## Frontend Pages
 - **Dashboard** — operational analytics (largest DBs, backup frequency, failure rate, growth)
@@ -77,6 +82,7 @@ Run workers in separate terminals (also from `backend/` with the venv active):
 ## Notes
 - SQLite databases: set the `host` field to the absolute file path of the `.db` file.
 - Restore runs asynchronously. For PostgreSQL/MySQL the target database is created if it does not exist.
-- `pg_dump`, `pg_restore`, `mysqldump`, and `mysql` must be available in `PATH` on the server running the Celery worker. MySQL dumps are compressed using Python's built-in `gzip` module — no system `gzip` required.
-- Manual backup trigger runs a preflight check and will return a clear API error if required backup binaries are missing.
+- Backup Engine Mode is configurable from **Settings** (admin) and also via `BACKUP_EXECUTION_MODE` (`python`, `native`, or `auto`) as environment fallback.
+- For production-grade parity with native database dump/restore semantics, use `native` (or `auto` when tools are installed).
+- In `native` mode, manual backup preflight checks fail early when required DB CLI tools are not available.
 - `paramiko` must be installed (`pip install paramiko`) for SFTP replication — it is included in `requirements.txt`.

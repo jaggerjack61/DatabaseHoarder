@@ -42,9 +42,9 @@ export function LandingPage() {
           className="surface relative overflow-hidden rounded-2xl p-8 lg:p-12"
         >
           <div className="pointer-events-none absolute -right-20 -top-20 h-72 w-72 rounded-full bg-accent/10 blur-3xl" />
-          <p className="font-mono text-xs uppercase tracking-[0.22em] text-muted-foreground">Backup Automation</p>
+          <p className="font-mono text-xs uppercase tracking-[0.22em] text-muted-foreground">Database Hoarder</p>
           <h1 className="mt-4 max-w-3xl font-headline text-5xl leading-tight text-foreground lg:text-6xl">
-            Enterprise backup orchestration with a <span className="gradient-text">single control plane</span>
+            Enterprise backup orchestration with <span className="gradient-text">Database Hoarder</span>
           </h1>
           <p className="mt-4 max-w-2xl text-sm text-muted-foreground lg:text-base">
             Manage backup schedules, replication policies, restores, and operational visibility from one secure system.
