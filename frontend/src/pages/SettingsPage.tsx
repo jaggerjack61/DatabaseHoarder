@@ -729,6 +729,7 @@ function UserManagementSection() {
 
 export function SettingsPage() {
   const { user, loading } = useAuth();
+  const [activeTab, setActiveTab] = useState<"profile" | "system" | "users">("profile");
 
   if (loading) {
     return (
@@ -745,9 +746,33 @@ export function SettingsPage() {
   return (
     <Section label="settings" title="Settings">
       <div className="space-y-6 max-w-3xl">
-        <ProfileSection />
-        {user?.role === "ADMIN" && <SystemSection />}
-        {user?.role === "ADMIN" && <UserManagementSection />}
+        <div className="flex flex-wrap gap-2 rounded-2xl border border-border bg-white p-2 shadow-soft">
+          <Button
+            size="sm"
+            variant={activeTab === "profile" ? "primary" : "secondary"}
+            onClick={() => setActiveTab("profile")}
+          >
+            Profile
+          </Button>
+          <Button
+            size="sm"
+            variant={activeTab === "system" ? "primary" : "secondary"}
+            onClick={() => setActiveTab("system")}
+          >
+            System
+          </Button>
+          <Button
+            size="sm"
+            variant={activeTab === "users" ? "primary" : "secondary"}
+            onClick={() => setActiveTab("users")}
+          >
+            User Management
+          </Button>
+        </div>
+
+        {activeTab === "profile" && <ProfileSection />}
+        {activeTab === "system" && user?.role === "ADMIN" && <SystemSection />}
+        {activeTab === "users" && user?.role === "ADMIN" && <UserManagementSection />}
       </div>
     </Section>
   );
