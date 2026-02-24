@@ -41,6 +41,7 @@ class DatabaseSerializer(serializers.ModelSerializer):
         fields = (
             "id",
             "name",
+            "alias",
             "db_type",
             "host",
             "port",
@@ -61,6 +62,8 @@ class DatabaseSerializer(serializers.ModelSerializer):
         username = attrs.get("username", getattr(self.instance, "username", ""))
         sqlite_location = attrs.get("sqlite_location", getattr(self.instance, "sqlite_location", SqliteLocation.LOCAL))
         sqlite_path = attrs.get("sqlite_path", getattr(self.instance, "sqlite_path", ""))
+        alias = attrs.get("alias", getattr(self.instance, "alias", ""))
+        name = attrs.get("name", getattr(self.instance, "name", ""))
 
         if db_type in {DatabaseType.POSTGRES, DatabaseType.MYSQL}:
             if not host:
@@ -69,6 +72,8 @@ class DatabaseSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError("Port is required for database connections.")
             if not username:
                 raise serializers.ValidationError("Username is required for database connections.")
+            if not alias:
+                raise serializers.ValidationError("Alias is required for database connections.")
             return attrs
 
         if db_type == DatabaseType.SQLITE:
@@ -89,6 +94,8 @@ class DatabaseSerializer(serializers.ModelSerializer):
                     raise serializers.ValidationError("SQLite path is required for local SQLite databases.")
                 if not host:
                     attrs["host"] = sqlite_path
+            if not alias:
+                attrs["alias"] = name or sqlite_path
             return attrs
 
         return attrs

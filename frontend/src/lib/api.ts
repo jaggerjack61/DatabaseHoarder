@@ -168,6 +168,7 @@ export function createDatabase(
   accessToken: string,
   payload: {
     name: string;
+    alias: string;
     db_type: DatabaseType;
     host: string;
     port: number;

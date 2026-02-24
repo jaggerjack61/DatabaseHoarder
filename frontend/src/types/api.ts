@@ -55,6 +55,7 @@ export type SqliteLocation = "LOCAL" | "REMOTE";
 export interface Database {
   id: number;
   name: string;
+  alias: string;
   db_type: DatabaseType;
   host: string;
   port: number;

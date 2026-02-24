@@ -104,6 +104,7 @@ export function HostsPage() {
   const [editStorageHostForm, setEditStorageHostForm] = useState({ name: "", address: "", ssh_port: 22, username: "", password: "" });
   const [editDatabaseForm, setEditDatabaseForm] = useState({
     name: "",
+    alias: "",
     db_type: "POSTGRES" as DatabaseType,
     host: "",
     port: 5432,
@@ -130,6 +131,7 @@ export function HostsPage() {
   const [storageHostForm, setStorageHostForm] = useState({ name: "", address: "", ssh_port: 22, username: "", password: "" });
   const [databaseForm, setDatabaseForm] = useState({
     name: "",
+    alias: "",
     db_type: "POSTGRES" as DatabaseType,
     host: "",
     port: 5432,
@@ -212,9 +214,13 @@ export function HostsPage() {
       const hostValue = databaseForm.db_type === "SQLITE" && databaseForm.sqlite_location === "LOCAL"
         ? databaseForm.sqlite_path
         : databaseForm.host;
-      await createDatabase(accessToken, { ...databaseForm, host: hostValue, is_active: true });
+      const aliasValue = databaseForm.db_type === "SQLITE"
+        ? databaseForm.name
+        : databaseForm.alias;
+      await createDatabase(accessToken, { ...databaseForm, alias: aliasValue, host: hostValue, is_active: true });
       setDatabaseForm({
         name: "",
+        alias: "",
         db_type: "POSTGRES",
         host: "",
         port: 5432,
@@ -265,6 +271,7 @@ export function HostsPage() {
   const openEditDatabase = (db: Database) => {
     setEditDatabaseForm({
       name: db.name,
+      alias: db.alias || db.name,
       db_type: db.db_type,
       host: db.host,
       port: db.port,
@@ -284,7 +291,10 @@ export function HostsPage() {
       const hostValue = editDatabaseForm.db_type === "SQLITE" && editDatabaseForm.sqlite_location === "LOCAL"
         ? editDatabaseForm.sqlite_path
         : editDatabaseForm.host;
-      await updateDatabase(accessToken, editingDatabase.id, { ...editDatabaseForm, host: hostValue });
+      const aliasValue = editDatabaseForm.db_type === "SQLITE"
+        ? editDatabaseForm.name
+        : editDatabaseForm.alias;
+      await updateDatabase(accessToken, editingDatabase.id, { ...editDatabaseForm, alias: aliasValue, host: hostValue });
       setEditingDatabase(null);
       await loadData();
     } catch { setError("Failed to update database."); }
@@ -416,6 +426,7 @@ export function HostsPage() {
   };
 
   const dbTypeLabel: Record<DatabaseType, string> = { POSTGRES: "PostgreSQL", MYSQL: "MySQL", SQLITE: "SQLite" };
+  const dbDisplayName = (db: Database) => db.alias || db.name;
   const sqliteDisplayPath = (db: Database) => db.sqlite_path || db.host;
   const sqliteHostLabel = (db: Database) =>
     db.sqlite_location === "REMOTE" ? `${db.host}:${db.port}` : `Local · ${sqliteDisplayPath(db)}`;
@@ -654,7 +665,7 @@ export function HostsPage() {
                     <div className="bg-gradient-accent absolute inset-x-0 top-0 h-1 opacity-70" />
                     <div className="flex items-start justify-between">
                       <div className="flex-1 min-w-0">
-                        <p className="font-semibold text-foreground">{db.name}</p>
+                        <p className="font-semibold text-foreground">{dbDisplayName(db)}</p>
                         {db.db_type === "SQLITE" ? (
                           <>
                             <p className="mt-1 text-sm text-muted-foreground">{dbTypeLabel[db.db_type]}</p>
@@ -710,7 +721,7 @@ export function HostsPage() {
                 <tbody className="divide-y divide-border bg-white">
                   {databases.map((db) => (
                     <tr key={db.id} className="hover:bg-surface/50 transition-colors">
-                      <td className="px-4 py-2 font-medium text-foreground">{db.name}</td>
+                      <td className="px-4 py-2 font-medium text-foreground">{dbDisplayName(db)}</td>
                       <td className="px-4 py-2 text-muted-foreground">{dbTypeLabel[db.db_type]}</td>
                       <td className="px-4 py-2 text-muted-foreground">
                         {db.db_type === "SQLITE"
@@ -757,8 +768,12 @@ export function HostsPage() {
               <p className="text-xs text-muted-foreground">
                 Enter the connection details for the database you want to back up.
               </p>
-              <Input placeholder="Name (friendly label)" value={databaseForm.name}
+              <Input placeholder="Name (database name)" value={databaseForm.name}
                 onChange={(e) => setDatabaseForm((p) => ({ ...p, name: e.target.value }))} required />
+              {databaseForm.db_type !== "SQLITE" && (
+                <Input placeholder="Alias (display name)" value={databaseForm.alias}
+                  onChange={(e) => setDatabaseForm((p) => ({ ...p, alias: e.target.value }))} required />
+              )}
               <select
                 className="h-12 w-full rounded-xl border border-border bg-white px-4 text-sm shadow-soft"
                 value={databaseForm.db_type}
@@ -836,8 +851,12 @@ export function HostsPage() {
 
           <Modal open={editingDatabase !== null} onClose={() => setEditingDatabase(null)} title="Edit Database">
             <form className="space-y-3" onSubmit={submitEditDatabase}>
-              <Input placeholder="Name (friendly label)" value={editDatabaseForm.name}
+              <Input placeholder="Name (database name)" value={editDatabaseForm.name}
                 onChange={(e) => setEditDatabaseForm((p) => ({ ...p, name: e.target.value }))} required />
+              {editDatabaseForm.db_type !== "SQLITE" && (
+                <Input placeholder="Alias (display name)" value={editDatabaseForm.alias}
+                  onChange={(e) => setEditDatabaseForm((p) => ({ ...p, alias: e.target.value }))} required />
+              )}
               <select
                 className="h-12 w-full rounded-xl border border-border bg-white px-4 text-sm shadow-soft"
                 value={editDatabaseForm.db_type}
@@ -949,7 +968,9 @@ export function HostsPage() {
                       <div className="bg-gradient-accent absolute inset-x-0 top-0 h-1 opacity-70" />
                       <div className="flex items-start justify-between">
                         <div className="flex-1 min-w-0">
-                          <p className="font-semibold text-foreground">{db?.name ?? `Database ${cfg.database}`}</p>
+                          <p className="font-semibold text-foreground">
+                            {db ? dbDisplayName(db) : `Database ${cfg.database}`}
+                          </p>
                           <p className="mt-1 text-sm text-muted-foreground">{minutesToDisplay(cfg.backup_frequency_minutes)}</p>
                           <p className="mt-1 text-xs text-muted-foreground">{dayNames}</p>
                           <p className="mt-1 text-xs text-muted-foreground">Retain {cfg.retention_days} days</p>
@@ -998,7 +1019,9 @@ export function HostsPage() {
                       : "Every day";
                     return (
                       <tr key={cfg.id} className="hover:bg-surface/50 transition-colors">
-                        <td className="px-4 py-2 font-medium text-foreground">{db?.name ?? `Database ${cfg.database}`}</td>
+                        <td className="px-4 py-2 font-medium text-foreground">
+                          {db ? dbDisplayName(db) : `Database ${cfg.database}`}
+                        </td>
                         <td className="px-4 py-2 text-muted-foreground">{minutesToDisplay(cfg.backup_frequency_minutes)}</td>
                         <td className="px-4 py-2 text-muted-foreground">{dayNames}</td>
                         <td className="px-4 py-2 text-muted-foreground">{cfg.retention_days}d</td>
@@ -1038,7 +1061,7 @@ export function HostsPage() {
               >
                 <option value="" disabled>Select database…</option>
                 {databases.map((db) => (
-                  <option key={db.id} value={db.id}>{db.name} ({dbTypeLabel[db.db_type]})</option>
+                  <option key={db.id} value={db.id}>{dbDisplayName(db)} ({dbTypeLabel[db.db_type]})</option>
                 ))}
               </select>
               {/* Frequency */}

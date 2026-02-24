@@ -50,7 +50,8 @@ class Database(models.Model):
     unrelated to ``StorageHost``.
     """
 
-    name = models.CharField(max_length=120, help_text="Friendly label for this database")
+    name = models.CharField(max_length=120, help_text="Actual database name")
+    alias = models.CharField(max_length=120, blank=True, default="", help_text="Display label for this database")
     db_type = models.CharField(max_length=16, choices=DatabaseType.choices)
     host = models.CharField(max_length=255, help_text="Hostname / IP of the database server")
     port = models.PositiveIntegerField(default=5432)
