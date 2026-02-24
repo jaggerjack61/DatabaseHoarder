@@ -1,0 +1,198 @@
+from rest_framework import viewsets
+from rest_framework.decorators import action
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+from rest_framework.serializers import CharField, ChoiceField, IntegerField, Serializer
+
+from apps.common.crypto import decrypt_text
+
+from .models import Database, DatabaseConfig, ReplicationPolicy, StorageHost
+from .serializers import (
+    DatabaseConfigSerializer,
+    DatabaseSerializer,
+    ReplicationPolicySerializer,
+    StorageHostSerializer,
+)
+
+
+class StorageHostConnectionTestSerializer(Serializer):
+    address = CharField(max_length=255)
+    ssh_port = IntegerField(min_value=1, max_value=65535)
+    username = CharField(max_length=120)
+    password = CharField(required=False, allow_blank=True, default="")
+
+
+class DatabaseConnectionTestSerializer(Serializer):
+    db_type = ChoiceField(choices=("POSTGRES", "MYSQL", "SQLITE"))
+    host = CharField(max_length=255)
+    port = IntegerField(min_value=1, max_value=65535)
+    username = CharField(max_length=120, required=False, allow_blank=True, default="")
+    password = CharField(required=False, allow_blank=True, default="")
+
+
+def test_storage_host_connection(address: str, ssh_port: int, username: str, password: str):
+    import paramiko
+
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    client.connect(
+        address,
+        port=ssh_port,
+        username=username,
+        password=password,
+        timeout=10,
+        allow_agent=False,
+        look_for_keys=False,
+    )
+    client.close()
+
+
+def test_database_connection(db_type: str, host: str, port: int, username: str, password: str):
+    if db_type == "POSTGRES":
+        import psycopg
+
+        conn = psycopg.connect(
+            host=host,
+            port=port,
+            user=username,
+            password=password,
+            dbname="postgres",
+            connect_timeout=10,
+        )
+        conn.close()
+    elif db_type == "MYSQL":
+        import pymysql
+
+        conn = pymysql.connect(
+            host=host,
+            port=port,
+            user=username,
+            password=password,
+            connect_timeout=10,
+        )
+        conn.close()
+    elif db_type == "SQLITE":
+        import sqlite3
+
+        conn = sqlite3.connect(host)
+        conn.close()
+    else:
+        raise ValueError(f"Unsupported db_type: {db_type}")
+
+
+class OwnerFilteredQuerysetMixin:
+    """Filter list results to the requesting user unless they are an admin."""
+
+    owner_lookup = "owner"
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        user = self.request.user
+        if user.is_admin:
+            return queryset
+        return queryset.filter(**{self.owner_lookup: user})
+
+
+class StorageHostViewSet(OwnerFilteredQuerysetMixin, viewsets.ModelViewSet):
+    """CRUD for SSH storage hosts used to store replicated backup files."""
+
+    queryset = StorageHost.objects.select_related("owner").all()
+    serializer_class = StorageHostSerializer
+    permission_classes = (IsAuthenticated,)
+
+    @action(detail=False, methods=["post"], url_path="test-connection")
+    def test_connection_with_payload(self, request):
+        """Attempt an SSH connection using payload details (for create/edit forms)."""
+        serializer = StorageHostConnectionTestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        try:
+            test_storage_host_connection(
+                address=data["address"],
+                ssh_port=data["ssh_port"],
+                username=data["username"],
+                password=data.get("password", ""),
+            )
+            return Response({"success": True, "message": "SSH connection successful."})
+        except Exception as exc:
+            return Response({"success": False, "message": str(exc)})
+
+    @action(detail=True, methods=["post"], url_path="test-connection")
+    def test_connection(self, request, pk=None):
+        """Attempt an SSH connection and return success/failure."""
+        host = self.get_object()
+        try:
+            password = decrypt_text(host.encrypted_password) if host.encrypted_password else ""
+            test_storage_host_connection(
+                address=host.address,
+                ssh_port=host.ssh_port,
+                username=host.username,
+                password=password,
+            )
+            return Response({"success": True, "message": "SSH connection successful."})
+        except Exception as exc:
+            return Response({"success": False, "message": str(exc)})
+
+
+class DatabaseViewSet(OwnerFilteredQuerysetMixin, viewsets.ModelViewSet):
+    """CRUD for databases that need to be backed up."""
+
+    queryset = Database.objects.select_related("owner").all()
+    serializer_class = DatabaseSerializer
+    permission_classes = (IsAuthenticated,)
+
+    @action(detail=False, methods=["post"], url_path="test-connection")
+    def test_connection_with_payload(self, request):
+        """Attempt a database connection using payload details (for create/edit forms)."""
+        serializer = DatabaseConnectionTestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        try:
+            test_database_connection(
+                db_type=data["db_type"],
+                host=data["host"],
+                port=data["port"],
+                username=data.get("username", ""),
+                password=data.get("password", ""),
+            )
+            return Response({"success": True, "message": "Database connection successful."})
+        except Exception as exc:
+            return Response({"success": False, "message": str(exc)})
+
+    @action(detail=True, methods=["post"], url_path="test-connection")
+    def test_connection(self, request, pk=None):
+        """Attempt a database connection and return success/failure."""
+        db = self.get_object()
+        try:
+            password = decrypt_text(db.encrypted_password) if db.encrypted_password else ""
+            test_database_connection(
+                db_type=db.db_type,
+                host=db.host,
+                port=db.port,
+                username=db.username,
+                password=password,
+            )
+            return Response({"success": True, "message": "Database connection successful."})
+        except Exception as exc:
+            return Response({"success": False, "message": str(exc)})
+
+
+class DatabaseConfigViewSet(OwnerFilteredQuerysetMixin, viewsets.ModelViewSet):
+    """CRUD for backup schedule configurations."""
+
+    queryset = DatabaseConfig.objects.select_related("database", "database__owner").all()
+    serializer_class = DatabaseConfigSerializer
+    permission_classes = (IsAuthenticated,)
+    owner_lookup = "database__owner"
+
+
+class ReplicationPolicyViewSet(OwnerFilteredQuerysetMixin, viewsets.ModelViewSet):
+    """CRUD for replication policies (which backups to copy to which storage hosts)."""
+
+    queryset = ReplicationPolicy.objects.select_related(
+        "database_config__database__owner",
+        "storage_host",
+    ).all()
+    serializer_class = ReplicationPolicySerializer
+    permission_classes = (IsAuthenticated,)
+    owner_lookup = "database_config__database__owner"

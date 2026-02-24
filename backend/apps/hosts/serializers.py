@@ -1,0 +1,107 @@
+from rest_framework import serializers
+
+from .models import Database, DatabaseConfig, ReplicationPolicy, StorageHost
+
+
+class StorageHostSerializer(serializers.ModelSerializer):
+    password = serializers.CharField(write_only=True, required=False, allow_blank=True, default="")
+
+    class Meta:
+        model = StorageHost
+        fields = ("id", "name", "address", "ssh_port", "username", "password", "owner", "is_active", "created_at")
+        read_only_fields = ("id", "owner", "created_at")
+
+    def create(self, validated_data):
+        raw_password = validated_data.pop("password", "")
+        validated_data["owner"] = self.context["request"].user
+        instance = StorageHost(**validated_data)
+        instance.set_password(raw_password)
+        instance.save()
+        return instance
+
+    def update(self, instance, validated_data):
+        raw_password = validated_data.pop("password", None)
+        for key, value in validated_data.items():
+            setattr(instance, key, value)
+        if raw_password is not None:
+            instance.set_password(raw_password)
+        instance.save()
+        return instance
+
+
+class DatabaseSerializer(serializers.ModelSerializer):
+    password = serializers.CharField(write_only=True, required=False, allow_blank=True, default="")
+
+    class Meta:
+        model = Database
+        fields = ("id", "name", "db_type", "host", "port", "username", "password", "owner", "is_active", "created_at")
+        read_only_fields = ("id", "owner", "created_at")
+
+    def create(self, validated_data):
+        raw_password = validated_data.pop("password", "")
+        validated_data["owner"] = self.context["request"].user
+        instance = Database(**validated_data)
+        instance.set_password(raw_password)
+        instance.save()
+        return instance
+
+    def update(self, instance, validated_data):
+        raw_password = validated_data.pop("password", None)
+        for key, value in validated_data.items():
+            setattr(instance, key, value)
+        if raw_password is not None:
+            instance.set_password(raw_password)
+        instance.save()
+        return instance
+
+
+class DatabaseConfigSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = DatabaseConfig
+        fields = (
+            "id",
+            "database",
+            "backup_frequency_minutes",
+            "retention_days",
+            "backup_days_of_week",
+            "retention_keep_monthly_first",
+            "retention_keep_weekly_day",
+            "last_backup_at",
+            "enabled",
+            "created_at",
+        )
+        read_only_fields = ("id", "last_backup_at", "created_at")
+
+    def validate_database(self, value):
+        user = self.context["request"].user
+        if not user.is_admin and value.owner_id != user.id:
+            raise serializers.ValidationError("Cannot create config for another user's database.")
+        return value
+
+
+class ReplicationPolicySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ReplicationPolicy
+        fields = (
+            "id",
+            "database_config",
+            "storage_host",
+            "remote_path",
+            "enabled",
+            "replication_frequency_minutes",
+            "last_replicated_at",
+            "replication_retention_days",
+            "created_at",
+        )
+        read_only_fields = ("id", "last_replicated_at", "created_at")
+
+    def validate(self, attrs):
+        user = self.context["request"].user
+        if not user.is_admin:
+            db_config = attrs["database_config"]
+            storage_host = attrs["storage_host"]
+            if db_config.database.owner_id != user.id:
+                raise serializers.ValidationError("Cannot create policy for another user's database config.")
+            if storage_host.owner_id != user.id:
+                raise serializers.ValidationError("Cannot replicate to another user's storage host.")
+        return attrs

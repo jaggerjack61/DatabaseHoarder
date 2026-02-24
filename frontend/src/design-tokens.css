@@ -1,0 +1,16 @@
+@import url("https://fonts.googleapis.com/css2?family=Calistoga&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap");
+
+:root {
+  --background: #fafafa;
+  --foreground: #0f172a;
+  --muted: #f1f5f9;
+  --muted-foreground: #64748b;
+  --accent: #0052ff;
+  --accent-secondary: #4d7cff;
+  --border: #e2e8f0;
+  --success: #16a34a;
+  --failure: #dc2626;
+  --shadow-soft: 0 10px 30px rgba(15, 23, 42, 0.06);
+  --shadow-hover: 0 14px 38px rgba(15, 23, 42, 0.12);
+  --gradient-accent: linear-gradient(120deg, var(--accent) 0%, var(--accent-secondary) 100%);
+}

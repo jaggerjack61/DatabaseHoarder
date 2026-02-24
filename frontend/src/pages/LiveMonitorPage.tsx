@@ -1,0 +1,239 @@
+import { useEffect, useMemo, useState } from "react";
+
+import { Badge } from "@/components/ui/Badge";
+import { Button } from "@/components/ui/Button";
+import { Section } from "@/components/ui/Section";
+import { Table, TableWrapper } from "@/components/ui/Table";
+import { useAuth } from "@/context/AuthContext";
+import { getConfigs, getDatabases, getLiveBackups, getLiveRestorations, getStorageHosts } from "@/lib/api";
+import { Backup, Database, DatabaseConfig, LiveBackupsResponse, LiveRestorationsResponse, RestoreJob, StorageHost } from "@/types/api";
+
+function StatusBadge({ status }: { status: Backup["status"] | "PENDING" | "RUNNING" | "SUCCESS" | "FAILED" }) {
+  if (status === "SUCCESS") return <Badge variant="success">Success</Badge>;
+  if (status === "FAILED") return <Badge variant="failed">Failed</Badge>;
+  if (status === "RUNNING") return (
+    <Badge variant="running">
+      <span className="mr-2 inline-block h-2 w-2 animate-pulse rounded-full bg-accent" />Running
+    </Badge>
+  );
+  return <Badge variant="neutral">Pending</Badge>;
+}
+
+export function LiveMonitorPage() {
+  const { accessToken } = useAuth();
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [autoRefresh, setAutoRefresh] = useState(true);
+  const [live, setLive] = useState<LiveBackupsResponse | null>(null);
+  const [liveRestorations, setLiveRestorations] = useState<LiveRestorationsResponse | null>(null);
+  const [configs, setConfigs] = useState<DatabaseConfig[]>([]);
+  const [databases, setDatabases] = useState<Database[]>([]);
+  const [storageHosts, setStorageHosts] = useState<StorageHost[]>([]);
+
+  const dbById = useMemo(() => new Map(databases.map((d) => [d.id, d])), [databases]);
+  const configById = useMemo(() => new Map(configs.map((c) => [c.id, c])), [configs]);
+  const storageHostById = useMemo(() => new Map(storageHosts.map((h) => [h.id, h])), [storageHosts]);
+
+  const dbNameForConfig = (configId: number) => {
+    const cfg = configById.get(configId);
+    if (!cfg) return `Config ${configId}`;
+    const db = dbById.get(cfg.database);
+    return db ? `${db.name} (${db.db_type})` : `Database ${cfg.database}`;
+  };
+
+  const loadLookups = async () => {
+    if (!accessToken) return;
+    const [cfgs, dbs, shs] = await Promise.all([
+      getConfigs(accessToken),
+      getDatabases(accessToken),
+      getStorageHosts(accessToken),
+    ]);
+    setConfigs(cfgs);
+    setDatabases(dbs);
+    setStorageHosts(shs);
+  };
+
+  const loadLive = async () => {
+    if (!accessToken) return;
+    try {
+      const [response, restoreResponse] = await Promise.all([
+        getLiveBackups(accessToken),
+        getLiveRestorations(accessToken),
+      ]);
+      setLive(response);
+      setLiveRestorations(restoreResponse);
+      setError(null);
+    } catch {
+      setError("Unable to load live backup data.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!accessToken) return;
+    setLoading(true);
+    void Promise.all([loadLookups(), loadLive()]);
+  }, [accessToken]);
+
+  useEffect(() => {
+    if (!accessToken || !autoRefresh) return;
+    const timer = window.setInterval(() => {
+      void loadLive();
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [accessToken, autoRefresh]);
+
+  const rows = live?.items ?? [];
+
+  return (
+    <Section label="monitor" title="Live Backup Monitor">
+      <div className="mb-4 flex flex-wrap items-center gap-3 rounded-2xl border border-border bg-muted/30 p-4">
+        <Button variant="secondary" onClick={() => void loadLive()}>Refresh Now</Button>
+        <Button variant={autoRefresh ? "primary" : "secondary"} onClick={() => setAutoRefresh((v) => !v)}>
+          {autoRefresh ? "Auto-refresh: On" : "Auto-refresh: Off"}
+        </Button>
+        <p className="text-xs text-muted-foreground">Polling every 3 seconds while enabled.</p>
+      </div>
+
+      {live && (
+        <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+          <div className="rounded-2xl border border-border bg-white p-3">
+            <p className="text-xs text-muted-foreground">Running Backups</p>
+            <p className="mt-1 text-xl font-semibold text-foreground">{live.summary.running_backups}</p>
+          </div>
+          <div className="rounded-2xl border border-border bg-white p-3">
+            <p className="text-xs text-muted-foreground">Pending Backups</p>
+            <p className="mt-1 text-xl font-semibold text-foreground">{live.summary.pending_backups}</p>
+          </div>
+          <div className="rounded-2xl border border-border bg-white p-3">
+            <p className="text-xs text-muted-foreground">Running Replications</p>
+            <p className="mt-1 text-xl font-semibold text-foreground">{live.summary.running_replications}</p>
+          </div>
+          <div className="rounded-2xl border border-border bg-white p-3">
+            <p className="text-xs text-muted-foreground">Pending Replications</p>
+            <p className="mt-1 text-xl font-semibold text-foreground">{live.summary.pending_replications}</p>
+          </div>
+          <div className="rounded-2xl border border-border bg-white p-3">
+            <p className="text-xs text-muted-foreground">Failed Replications</p>
+            <p className="mt-1 text-xl font-semibold text-foreground">{live.summary.failed_replications}</p>
+          </div>
+          <div className="rounded-2xl border border-border bg-white p-3">
+            <p className="text-xs text-muted-foreground">Tracked Items</p>
+            <p className="mt-1 text-xl font-semibold text-foreground">{live.summary.total_items}</p>
+          </div>
+        </div>
+      )}
+
+      {liveRestorations && (
+        <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="rounded-2xl border border-border bg-white p-3">
+            <p className="text-xs text-muted-foreground">Running Restorations</p>
+            <p className="mt-1 text-xl font-semibold text-foreground">{liveRestorations.summary.running_restorations}</p>
+          </div>
+          <div className="rounded-2xl border border-border bg-white p-3">
+            <p className="text-xs text-muted-foreground">Pending Restorations</p>
+            <p className="mt-1 text-xl font-semibold text-foreground">{liveRestorations.summary.pending_restorations}</p>
+          </div>
+          <div className="rounded-2xl border border-border bg-white p-3">
+            <p className="text-xs text-muted-foreground">Restoration Items</p>
+            <p className="mt-1 text-xl font-semibold text-foreground">{liveRestorations.summary.total_items}</p>
+          </div>
+        </div>
+      )}
+
+      {loading && <p className="mb-4 text-sm text-muted-foreground">Loading live backup data...</p>}
+      {error && <p className="mb-4 text-sm text-failure">{error}</p>}
+
+      <TableWrapper>
+        <Table>
+          <thead>
+            <tr className="border-b border-border text-left text-xs uppercase tracking-wider text-muted-foreground">
+              <th className="px-4 py-3">Backup</th>
+              <th className="px-4 py-3">Database</th>
+              <th className="px-4 py-3">Backup Status</th>
+              <th className="px-4 py-3">Replications</th>
+              <th className="px-4 py-3">Started</th>
+              <th className="px-4 py-3">Completed</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => (
+              <tr key={row.id} className="border-b border-border/70 hover:bg-muted/60">
+                <td className="px-4 py-3">#{row.id}</td>
+                <td className="px-4 py-3">{dbNameForConfig(row.database_config)}</td>
+                <td className="px-4 py-3"><StatusBadge status={row.status} /></td>
+                <td className="px-4 py-3">
+                  {row.replications.length === 0 ? (
+                    <span className="text-xs text-muted-foreground">Local only</span>
+                  ) : (
+                    <div className="space-y-1">
+                      {row.replications.map((rep) => (
+                        <div key={rep.id} className="flex items-center gap-2 text-xs">
+                          <StatusBadge status={rep.status} />
+                          <span className="text-muted-foreground">
+                            {storageHostById.get(rep.storage_host)?.name ?? `Host ${rep.storage_host}`}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </td>
+                <td className="px-4 py-3 text-xs text-muted-foreground">
+                  {row.started_at ? new Date(row.started_at).toLocaleString() : "—"}
+                </td>
+                <td className="px-4 py-3 text-xs text-muted-foreground">
+                  {row.completed_at ? new Date(row.completed_at).toLocaleString() : "—"}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </Table>
+      </TableWrapper>
+
+      {!loading && rows.length === 0 && <p className="mt-4 text-sm text-muted-foreground">No active or recent backups yet.</p>}
+
+      {/* ------------------------------------------------------------------ */}
+      {/* RESTORATIONS SECTION                                                */}
+      {/* ------------------------------------------------------------------ */}
+      <h2 className="mt-8 mb-3 text-base font-semibold text-foreground">Restoration Activity</h2>
+
+      <TableWrapper>
+        <Table>
+          <thead>
+            <tr className="border-b border-border text-left text-xs uppercase tracking-wider text-muted-foreground">
+              <th className="px-4 py-3">Restore #</th>
+              <th className="px-4 py-3">Backup #</th>
+              <th className="px-4 py-3">Target DB</th>
+              <th className="px-4 py-3">Status</th>
+              <th className="px-4 py-3">Triggered By</th>
+              <th className="px-4 py-3">Started</th>
+              <th className="px-4 py-3">Completed</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(liveRestorations?.items ?? []).map((job: RestoreJob) => (
+              <tr key={job.id} className="border-b border-border/70 hover:bg-muted/60">
+                <td className="px-4 py-3">#{job.id}</td>
+                <td className="px-4 py-3">#{job.backup}</td>
+                <td className="px-4 py-3 text-xs text-muted-foreground">{job.target_db}</td>
+                <td className="px-4 py-3"><StatusBadge status={job.status} /></td>
+                <td className="px-4 py-3 text-xs text-muted-foreground">{job.triggered_by ?? "—"}</td>
+                <td className="px-4 py-3 text-xs text-muted-foreground">
+                  {job.started_at ? new Date(job.started_at).toLocaleString() : "—"}
+                </td>
+                <td className="px-4 py-3 text-xs text-muted-foreground">
+                  {job.completed_at ? new Date(job.completed_at).toLocaleString() : "—"}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </Table>
+      </TableWrapper>
+
+      {!loading && (liveRestorations?.items ?? []).length === 0 && (
+        <p className="mt-4 text-sm text-muted-foreground">No active or recent restorations.</p>
+      )}
+    </Section>
+  );
+}

@@ -1,0 +1,314 @@
+import {
+  AuthTokens,
+  Backup,
+  CurrentUser,
+  DashboardMetrics,
+  Database,
+  DatabaseConfig,
+  DatabaseType,
+  LiveBackupsResponse,
+  LiveRestorationsResponse,
+  ReplicationPolicy,
+  SiteSettings,
+  StorageHost,
+  TriggerBackupResponse,
+} from "@/types/api";
+
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
+const ACCESS_TOKEN_KEY = "dbauto.access";
+const REFRESH_TOKEN_KEY = "dbauto.refresh";
+
+function buildHeaders(token?: string, isJson = true) {
+  return {
+    ...(isJson ? { "Content-Type": "application/json" } : {}),
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+}
+
+async function request<T>(path: string, options: RequestInit = {}, token?: string): Promise<T> {
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    ...options,
+    headers: {
+      ...buildHeaders(token, options.body !== undefined),
+      ...(options.headers || {}),
+    },
+  });
+
+  if (!response.ok) {
+    let detail = "";
+    try {
+      const text = await response.text();
+      try {
+        const json = JSON.parse(text) as { detail?: string };
+        detail = json.detail || "";
+      } catch {
+        detail = text;
+      }
+    } catch {
+      // body unreadable — fall through to status-based message
+    }
+    throw new Error(detail || `Request failed with status ${response.status}`);
+  }
+
+  if (response.status === 204) {
+    return null as T;
+  }
+  return (await response.json()) as T;
+}
+
+// ---------------------------------------------------------------------------
+// Auth
+// ---------------------------------------------------------------------------
+
+export function getStoredTokens(): AuthTokens | null {
+  const access = localStorage.getItem(ACCESS_TOKEN_KEY);
+  const refresh = localStorage.getItem(REFRESH_TOKEN_KEY);
+  if (!access || !refresh) return null;
+  return { access, refresh };
+}
+
+export function storeTokens(tokens: AuthTokens) {
+  localStorage.setItem(ACCESS_TOKEN_KEY, tokens.access);
+  localStorage.setItem(REFRESH_TOKEN_KEY, tokens.refresh);
+}
+
+export function clearTokens() {
+  localStorage.removeItem(ACCESS_TOKEN_KEY);
+  localStorage.removeItem(REFRESH_TOKEN_KEY);
+}
+
+export function login(username: string, password: string) {
+  return request<AuthTokens>("/api/auth/token/", {
+    method: "POST",
+    body: JSON.stringify({ username, password }),
+  });
+}
+
+export function getMe(accessToken: string) {
+  return request<CurrentUser>("/api/users/me/", { method: "GET" }, accessToken);
+}
+
+// ---------------------------------------------------------------------------
+// Dashboard
+// ---------------------------------------------------------------------------
+
+export function getDashboardMetrics(accessToken: string) {
+  return request<DashboardMetrics>("/api/dashboard/metrics/", { method: "GET" }, accessToken);
+}
+
+// ---------------------------------------------------------------------------
+// Storage Hosts (SSH servers for backup replication)
+// ---------------------------------------------------------------------------
+
+export function getStorageHosts(accessToken: string) {
+  return request<StorageHost[]>("/api/hosts/storage-hosts/", { method: "GET" }, accessToken);
+}
+
+export function createStorageHost(
+  accessToken: string,
+  payload: { name: string; address: string; ssh_port: number; username: string; password?: string; is_active: boolean },
+) {
+  return request<StorageHost>(
+    "/api/hosts/storage-hosts/",
+    { method: "POST", body: JSON.stringify({ ...payload, password: payload.password ?? "" }) },
+    accessToken,
+  );
+}
+
+export function updateStorageHost(accessToken: string, id: number, payload: Partial<StorageHost> & { password?: string }) {
+  return request<StorageHost>(`/api/hosts/storage-hosts/${id}/`, { method: "PATCH", body: JSON.stringify(payload) }, accessToken);
+}
+
+export function deleteStorageHost(accessToken: string, id: number) {
+  return request<null>(`/api/hosts/storage-hosts/${id}/`, { method: "DELETE" }, accessToken);
+}
+
+export function testStorageHostConnection(accessToken: string, id: number) {
+  return request<{ success: boolean; message: string }>(
+    `/api/hosts/storage-hosts/${id}/test-connection/`,
+    { method: "POST" },
+    accessToken,
+  );
+}
+
+export function testStorageHostConnectionByPayload(
+  accessToken: string,
+  payload: { address: string; ssh_port: number; username: string; password?: string },
+) {
+  return request<{ success: boolean; message: string }>(
+    "/api/hosts/storage-hosts/test-connection/",
+    { method: "POST", body: JSON.stringify({ ...payload, password: payload.password ?? "" }) },
+    accessToken,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Databases (DB connections to back up)
+// ---------------------------------------------------------------------------
+
+export function getDatabases(accessToken: string) {
+  return request<Database[]>("/api/hosts/databases/", { method: "GET" }, accessToken);
+}
+
+export function createDatabase(
+  accessToken: string,
+  payload: { name: string; db_type: DatabaseType; host: string; port: number; username: string; password?: string; is_active: boolean },
+) {
+  return request<Database>(
+    "/api/hosts/databases/",
+    { method: "POST", body: JSON.stringify({ ...payload, password: payload.password ?? "" }) },
+    accessToken,
+  );
+}
+
+export function updateDatabase(accessToken: string, id: number, payload: Partial<Database> & { password?: string }) {
+  return request<Database>(`/api/hosts/databases/${id}/`, { method: "PATCH", body: JSON.stringify(payload) }, accessToken);
+}
+
+export function deleteDatabase(accessToken: string, id: number) {
+  return request<null>(`/api/hosts/databases/${id}/`, { method: "DELETE" }, accessToken);
+}
+
+export function testDatabaseConnection(accessToken: string, id: number) {
+  return request<{ success: boolean; message: string }>(
+    `/api/hosts/databases/${id}/test-connection/`,
+    { method: "POST" },
+    accessToken,
+  );
+}
+
+export function testDatabaseConnectionByPayload(
+  accessToken: string,
+  payload: { db_type: DatabaseType; host: string; port: number; username: string; password?: string },
+) {
+  return request<{ success: boolean; message: string }>(
+    "/api/hosts/databases/test-connection/",
+    { method: "POST", body: JSON.stringify({ ...payload, password: payload.password ?? "" }) },
+    accessToken,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Database Configs (backup schedules per database)
+// ---------------------------------------------------------------------------
+
+export function getConfigs(accessToken: string) {
+  return request<DatabaseConfig[]>("/api/hosts/configs/", { method: "GET" }, accessToken);
+}
+
+export function createConfig(
+  accessToken: string,
+  payload: {
+    database: number;
+    backup_frequency_minutes: number;
+    retention_days: number;
+    backup_days_of_week?: number[];
+    retention_keep_monthly_first?: boolean;
+    retention_keep_weekly_day?: number | null;
+    enabled: boolean;
+  },
+) {
+  return request<DatabaseConfig>("/api/hosts/configs/", { method: "POST", body: JSON.stringify(payload) }, accessToken);
+}
+
+export function updateConfig(accessToken: string, id: number, payload: Partial<DatabaseConfig>) {
+  return request<DatabaseConfig>(`/api/hosts/configs/${id}/`, { method: "PATCH", body: JSON.stringify(payload) }, accessToken);
+}
+
+export function deleteConfig(accessToken: string, id: number) {
+  return request<null>(`/api/hosts/configs/${id}/`, { method: "DELETE" }, accessToken);
+}
+
+// ---------------------------------------------------------------------------
+// Replication Policies
+// ---------------------------------------------------------------------------
+
+export function getReplicationPolicies(accessToken: string) {
+  return request<ReplicationPolicy[]>("/api/hosts/replication-policies/", { method: "GET" }, accessToken);
+}
+
+export function createReplicationPolicy(
+  accessToken: string,
+  payload: {
+    database_config: number;
+    storage_host: number;
+    remote_path: string;
+    enabled: boolean;
+    replication_frequency_minutes?: number | null;
+    replication_retention_days?: number | null;
+  },
+) {
+  return request<ReplicationPolicy>("/api/hosts/replication-policies/", { method: "POST", body: JSON.stringify(payload) }, accessToken);
+}
+
+export function deleteReplicationPolicy(accessToken: string, id: number) {
+  return request<null>(`/api/hosts/replication-policies/${id}/`, { method: "DELETE" }, accessToken);
+}
+
+export function updateReplicationPolicy(accessToken: string, id: number, payload: Partial<ReplicationPolicy>) {
+  return request<ReplicationPolicy>(`/api/hosts/replication-policies/${id}/`, { method: "PATCH", body: JSON.stringify(payload) }, accessToken);
+}
+
+// ---------------------------------------------------------------------------
+// Backups
+// ---------------------------------------------------------------------------
+
+export function getBackups(accessToken: string) {
+  return request<Backup[]>("/api/backups/", { method: "GET" }, accessToken);
+}
+
+export function triggerBackup(accessToken: string, databaseConfigId: number) {
+  return request<TriggerBackupResponse>(
+    "/api/backups/trigger/",
+    { method: "POST", body: JSON.stringify({ database_config: databaseConfigId }) },
+    accessToken,
+  );
+}
+
+export function getLiveBackups(accessToken: string) {
+  return request<LiveBackupsResponse>("/api/backups/live/", { method: "GET" }, accessToken);
+}
+
+export function getLiveRestorations(accessToken: string) {
+  return request<LiveRestorationsResponse>("/api/backups/live-restorations/", { method: "GET" }, accessToken);
+}
+
+export function restoreBackup(
+  accessToken: string,
+  backupId: number,
+  payload: { target_db: string; confirmation_phrase: string },
+) {
+  return request<{ status: string; backup_id: number; target_db: string }>(
+    `/api/backups/${backupId}/restore/`,
+    { method: "POST", body: JSON.stringify(payload) },
+    accessToken,
+  );
+}
+
+export function deleteBackup(accessToken: string, backupId: number) {
+  return request<null>(`/api/backups/${backupId}/manual_delete/`, { method: "DELETE" }, accessToken);
+}
+
+// ---------------------------------------------------------------------------
+// Settings
+// ---------------------------------------------------------------------------
+
+export function getSiteSettings(accessToken: string) {
+  return request<SiteSettings>("/api/settings/", { method: "GET" }, accessToken);
+}
+
+export function updateSiteSettings(accessToken: string, payload: Partial<SiteSettings>) {
+  return request<SiteSettings>("/api/settings/", { method: "PATCH", body: JSON.stringify(payload) }, accessToken);
+}
+
+export function resetThrottles(accessToken: string) {
+  return request<{ cleared: number }>("/api/settings/reset-throttles/", { method: "POST" }, accessToken);
+}
+
+export function changePassword(accessToken: string, oldPassword: string, newPassword: string) {
+  return request<{ detail: string }>(
+    "/api/users/change-password/",
+    { method: "POST", body: JSON.stringify({ old_password: oldPassword, new_password: newPassword }) },
+    accessToken,
+  );
+}
