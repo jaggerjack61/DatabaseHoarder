@@ -67,6 +67,39 @@ export interface Database {
   created_at: string;
 }
 
+export interface StorageHostConnectionStatus {
+  id: number;
+  name: string;
+  address: string;
+  ssh_port: number;
+  username: string;
+  is_active: boolean;
+  success: boolean;
+  message: string;
+}
+
+export interface DatabaseConnectionStatus {
+  id: number;
+  name: string;
+  alias: string;
+  db_type: DatabaseType;
+  host: string;
+  port: number;
+  username: string;
+  sqlite_location: SqliteLocation;
+  sqlite_path: string;
+  is_active: boolean;
+  success: boolean;
+  message: string;
+}
+
+export interface ConnectionStatusResponse {
+  checked_at: string;
+  poll_interval_seconds: number;
+  storage_hosts: StorageHostConnectionStatus[];
+  databases: DatabaseConnectionStatus[];
+}
+
 /** Backup schedule and retention policy for a database. */
 export interface DatabaseConfig {
   id: number;
@@ -78,6 +111,8 @@ export interface DatabaseConfig {
   retention_keep_monthly_first: boolean;
   /** Keep backups from this weekday (0=Mon … 6=Sun). null = no exception. */
   retention_keep_weekly_day: number | null;
+  retention_exception_days: number | null;
+  retention_exception_max_days: number | null;
   last_backup_at: string | null;
   enabled: boolean;
   created_at: string;
@@ -95,9 +130,15 @@ export interface ReplicationPolicy {
   enabled: boolean;
   /** null = trigger after every successful backup; number = independent interval in minutes */
   replication_frequency_minutes: number | null;
+  /** Weekday numbers (0=Mon … 6=Sun). Empty = every day. */
+  replication_days_of_week: number[];
   last_replicated_at: string | null;
   /** null = no separate retention for replicated copies */
   replication_retention_days: number | null;
+  /** null = no exception interval for replicated copies */
+  replication_retention_exception_days: number | null;
+  /** null = no max duration for retention exceptions */
+  replication_retention_exception_max_days: number | null;
   created_at: string;
 }
 
@@ -200,4 +241,5 @@ export interface SiteSettings {
   restore_throttle_rate: string;
   manual_backup_throttle_rate: string;
   backup_execution_mode: "python" | "native" | "auto";
+  connection_check_interval_seconds: number;
 }

@@ -944,13 +944,36 @@ def delete_backup_artifacts(backup: Backup, delete_replications: bool = False):
 # ---------------------------------------------------------------------------
 
 def apply_retention(config: DatabaseConfig):
-    cutoff = timezone.now() - timedelta(days=config.retention_days)
+    now = timezone.now()
+    cutoff = now - timedelta(days=config.retention_days)
     queryset = Backup.objects.filter(database_config=config, status=BackupStatus.SUCCESS).order_by("-completed_at")
     latest_success = queryset.first()
     stale = queryset.filter(completed_at__lt=cutoff)
+    exception_keep_ids = set()
+    if config.retention_exception_days:
+        last_kept_at = None
+        max_cutoff = (
+            now - timedelta(days=config.retention_exception_max_days)
+            if config.retention_exception_max_days
+            else None
+        )
+        for backup in stale:
+            if not backup.completed_at:
+                continue
+            if max_cutoff and backup.completed_at < max_cutoff:
+                continue
+            if last_kept_at is None:
+                exception_keep_ids.add(backup.id)
+                last_kept_at = backup.completed_at
+                continue
+            if (last_kept_at - backup.completed_at).days >= config.retention_exception_days:
+                exception_keep_ids.add(backup.id)
+                last_kept_at = backup.completed_at
 
     for backup in stale:
         if latest_success and backup.id == latest_success.id:
+            continue
+        if backup.id in exception_keep_ids:
             continue
         # Exception: keep backups completed on the 1st of any month
         if config.retention_keep_monthly_first and backup.completed_at and backup.completed_at.day == 1:
@@ -978,14 +1001,37 @@ def apply_replication_retention(policy):
     """Delete BackupReplication records older than policy.replication_retention_days."""
     if not policy.replication_retention_days:
         return
-    cutoff = timezone.now() - timedelta(days=policy.replication_retention_days)
+    now = timezone.now()
+    cutoff = now - timedelta(days=policy.replication_retention_days)
     stale = BackupReplication.objects.filter(
         storage_host=policy.storage_host,
         backup__database_config=policy.database_config,
         status=ReplicationStatus.SUCCESS,
         completed_at__lt=cutoff,
-    )
+    ).order_by("-completed_at")
+    exception_keep_ids = set()
+    if policy.replication_retention_exception_days:
+        last_kept_at = None
+        max_cutoff = (
+            now - timedelta(days=policy.replication_retention_exception_max_days)
+            if policy.replication_retention_exception_max_days
+            else None
+        )
+        for rep in stale:
+            if not rep.completed_at:
+                continue
+            if max_cutoff and rep.completed_at < max_cutoff:
+                continue
+            if last_kept_at is None:
+                exception_keep_ids.add(rep.id)
+                last_kept_at = rep.completed_at
+                continue
+            if (last_kept_at - rep.completed_at).days >= policy.replication_retention_exception_days:
+                exception_keep_ids.add(rep.id)
+                last_kept_at = rep.completed_at
     for rep in stale:
+        if rep.id in exception_keep_ids:
+            continue
         create_audit_log(
             user=policy.database_config.database.owner,
             action="REPLICATION_DELETED_RETENTION",

@@ -32,6 +32,12 @@ class SiteSettings(models.Model):
         default=BACKUP_MODE_AUTO,
         help_text="Backup engine mode: python, native, or auto.",
     )
+    connection_check_interval_seconds = models.PositiveIntegerField(
+        default=300,
+        help_text="Interval in seconds for connection health checks.",
+    )
+    last_connection_check_at = models.DateTimeField(null=True, blank=True)
+    last_connection_check_payload = models.JSONField(default=dict, blank=True)
 
     class Meta:
         verbose_name = "Site Settings"

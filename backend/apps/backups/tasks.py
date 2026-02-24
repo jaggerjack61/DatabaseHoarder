@@ -40,17 +40,16 @@ def schedule_due_backups():
     queryset = DatabaseConfig.objects.filter(enabled=True, database__is_active=True).select_related("database")
 
     for config in queryset:
-        # Selective day-of-week filter — empty list means every day
-        allowed_days = config.backup_days_of_week
-        if allowed_days and today_weekday not in allowed_days:
-            continue
-
-        if config.last_backup_at is None:
-            run_backup_task.delay(config.id)
-            continue
-
-        elapsed_minutes = (now - config.last_backup_at).total_seconds() / 60
-        if elapsed_minutes >= config.backup_frequency_minutes:
+        allowed_days = config.backup_days_of_week or []
+        day_due = bool(allowed_days) and today_weekday in allowed_days
+        interval_due = False
+        if config.backup_frequency_minutes:
+            if config.last_backup_at is None:
+                interval_due = True
+            else:
+                elapsed_minutes = (now - config.last_backup_at).total_seconds() / 60
+                interval_due = elapsed_minutes >= config.backup_frequency_minutes
+        if day_due or interval_due:
             run_backup_task.delay(config.id)
 
 
@@ -67,17 +66,20 @@ def schedule_due_replications():
     from .services import apply_replication_retention
 
     now = timezone.now()
-    policies = ReplicationPolicy.objects.filter(
-        enabled=True,
-        replication_frequency_minutes__isnull=False,
-    ).select_related("database_config__database", "storage_host")
+    policies = ReplicationPolicy.objects.filter(enabled=True).select_related("database_config__database", "storage_host")
 
     for policy in policies:
-        # Check if enough time has elapsed since last replication
-        if policy.last_replicated_at is not None:
-            elapsed = (now - policy.last_replicated_at).total_seconds() / 60
-            if elapsed < policy.replication_frequency_minutes:
-                continue
+        allowed_days = policy.replication_days_of_week or []
+        day_due = bool(allowed_days) and now.weekday() in allowed_days
+        interval_due = False
+        if policy.replication_frequency_minutes is not None:
+            if policy.last_replicated_at is None:
+                interval_due = True
+            else:
+                elapsed = (now - policy.last_replicated_at).total_seconds() / 60
+                interval_due = elapsed >= policy.replication_frequency_minutes
+        if not (day_due or interval_due):
+            continue
 
         # Find the latest successful backup for this config
         latest = (

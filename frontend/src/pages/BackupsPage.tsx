@@ -50,49 +50,67 @@ function toConfigWeekday(jsWeekday: number) {
   return (jsWeekday + 6) % 7;
 }
 
+function nextWeekdayOccurrence(activeDays: number[], now: Date) {
+  if (activeDays.length === 0) return null;
+  const today = toConfigWeekday(now.getDay());
+  if (activeDays.includes(today)) {
+    return new Date(now);
+  }
+  let closestOffset = 7;
+  for (const day of activeDays) {
+    const offset = (day - today + 7) % 7;
+    if (offset !== 0 && offset < closestOffset) {
+      closestOffset = offset;
+    }
+  }
+  const next = new Date(now);
+  next.setDate(next.getDate() + closestOffset);
+  return next;
+}
+
+function minDate(a: Date | null, b: Date | null) {
+  if (!a) return b;
+  if (!b) return a;
+  return a.getTime() <= b.getTime() ? a : b;
+}
+
 function findNextBackupOccurrence(config: DatabaseConfig | undefined, now: Date) {
   if (!config || !config.enabled) return null;
 
+  const activeDays = config.backup_days_of_week ?? [];
+  const dayNext = nextWeekdayOccurrence(activeDays, now);
+  if (config.backup_frequency_minutes === 0) {
+    return dayNext;
+  }
+
   const frequencyMinutes = Math.max(1, config.backup_frequency_minutes || 1);
   const intervalMs = frequencyMinutes * 60 * 1000;
-  const start = config.last_backup_at
+  const intervalStart = config.last_backup_at
     ? new Date(new Date(config.last_backup_at).getTime() + intervalMs)
-    : new Date(now.getTime() + intervalMs);
-
-  if (Number.isNaN(start.getTime())) {
-    return null;
-  }
-
-  const activeDays = config.backup_days_of_week ?? [];
-  if (activeDays.length === 0) {
-    return start;
-  }
-
-  const maxIterations = Math.ceil((14 * 24 * 60) / frequencyMinutes);
-  const candidate = new Date(start);
-  for (let index = 0; index < maxIterations; index += 1) {
-    if (activeDays.includes(toConfigWeekday(candidate.getDay()))) {
-      return candidate;
-    }
-    candidate.setMinutes(candidate.getMinutes() + frequencyMinutes);
-  }
-
-  return null;
+    : new Date(now);
+  const intervalNext = Number.isNaN(intervalStart.getTime()) ? null : intervalStart;
+  return minDate(intervalNext, dayNext);
 }
 
 function findNextReplicationOccurrence(policy: ReplicationPolicy, now: Date, nextBackupAt: Date | null) {
   if (!policy.enabled) return null;
-  if (policy.replication_frequency_minutes == null) {
+  if (policy.replication_frequency_minutes == null && policy.replication_days_of_week.length === 0) {
     return nextBackupAt;
   }
 
-  const frequencyMinutes = Math.max(1, policy.replication_frequency_minutes || 1);
-  const intervalMs = frequencyMinutes * 60 * 1000;
-  const start = policy.last_replicated_at
-    ? new Date(new Date(policy.last_replicated_at).getTime() + intervalMs)
-    : new Date(now.getTime() + intervalMs);
+  const intervalNext = policy.replication_frequency_minutes == null
+    ? null
+    : (() => {
+        const frequencyMinutes = Math.max(1, policy.replication_frequency_minutes || 1);
+        const intervalMs = frequencyMinutes * 60 * 1000;
+        const start = policy.last_replicated_at
+          ? new Date(new Date(policy.last_replicated_at).getTime() + intervalMs)
+          : new Date(now);
+        return Number.isNaN(start.getTime()) ? null : start;
+      })();
 
-  return Number.isNaN(start.getTime()) ? null : start;
+  const dayNext = nextWeekdayOccurrence(policy.replication_days_of_week ?? [], now);
+  return minDate(intervalNext, dayNext);
 }
 
 export function BackupsPage() {

@@ -17,4 +17,9 @@ class SiteSettingsSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = SiteSettings
-        fields = ("restore_throttle_rate", "manual_backup_throttle_rate", "backup_execution_mode")
+        fields = (
+            "restore_throttle_rate",
+            "manual_backup_throttle_rate",
+            "backup_execution_mode",
+            "connection_check_interval_seconds",
+        )

@@ -129,11 +129,22 @@ class DatabaseConfigSerializer(serializers.ModelSerializer):
             "backup_days_of_week",
             "retention_keep_monthly_first",
             "retention_keep_weekly_day",
+            "retention_exception_days",
+            "retention_exception_max_days",
             "last_backup_at",
             "enabled",
             "created_at",
         )
         read_only_fields = ("id", "last_backup_at", "created_at")
+
+    def validate(self, attrs):
+        backup_frequency = attrs.get("backup_frequency_minutes")
+        backup_days = attrs.get("backup_days_of_week")
+        if backup_frequency == 0 and not backup_days:
+            raise serializers.ValidationError(
+                "backup_frequency_minutes must be greater than 0 when no backup_days_of_week are selected."
+            )
+        return attrs
 
     def validate_database(self, value):
         user = self.context["request"].user
@@ -152,8 +163,11 @@ class ReplicationPolicySerializer(serializers.ModelSerializer):
             "remote_path",
             "enabled",
             "replication_frequency_minutes",
+            "replication_days_of_week",
             "last_replicated_at",
             "replication_retention_days",
+            "replication_retention_exception_days",
+            "replication_retention_exception_max_days",
             "created_at",
         )
         read_only_fields = ("id", "last_replicated_at", "created_at")

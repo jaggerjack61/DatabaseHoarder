@@ -206,6 +206,7 @@ function SystemSection() {
     restore_throttle_rate: "",
     manual_backup_throttle_rate: "",
     backup_execution_mode: "auto",
+    connection_check_interval_seconds: 300,
   });
   const [saving, setSaving] = useState(false);
   const [saveMsg, setSaveMsg] = useState<string | null>(null);
@@ -256,7 +257,8 @@ function SystemSection() {
   const isDirty = settings !== null && (
     form.restore_throttle_rate !== settings.restore_throttle_rate ||
     form.manual_backup_throttle_rate !== settings.manual_backup_throttle_rate ||
-    form.backup_execution_mode !== settings.backup_execution_mode
+    form.backup_execution_mode !== settings.backup_execution_mode ||
+    form.connection_check_interval_seconds !== settings.connection_check_interval_seconds
   );
 
   return (
@@ -287,6 +289,21 @@ function SystemSection() {
             Auto uses native tools when installed and falls back to Python mode if unavailable.
           </p>
         </div>
+      </SettingRow>
+
+      <Divider />
+
+      <SettingRow
+        label="Connection Check Interval"
+        hint="Polling interval in seconds for connection health checks."
+      >
+        <Input
+          className="max-w-xs"
+          type="number"
+          min={15}
+          value={form.connection_check_interval_seconds}
+          onChange={(e) => setForm((f) => ({ ...f, connection_check_interval_seconds: Number(e.target.value) }))}
+        />
       </SettingRow>
 
       <Divider />
@@ -813,28 +830,37 @@ export function SettingsPage() {
   return (
     <Section label="settings" title="Settings">
       <div className="space-y-6 max-w-3xl">
-        <div className="flex flex-wrap gap-2 rounded-2xl border border-border bg-white p-2 shadow-soft">
-          <Button
-            size="sm"
-            variant={activeTab === "profile" ? "primary" : "secondary"}
+        <div className="mb-2 flex gap-2 border-b border-border">
+          <button
             onClick={() => setActiveTab("profile")}
+            className={`flex items-center gap-2 border-b-2 px-4 pb-3 pt-1 text-sm font-medium transition ${
+              activeTab === "profile"
+                ? "border-accent text-foreground"
+                : "border-transparent text-muted-foreground hover:text-foreground"
+            }`}
           >
             Profile
-          </Button>
-          <Button
-            size="sm"
-            variant={activeTab === "system" ? "primary" : "secondary"}
+          </button>
+          <button
             onClick={() => setActiveTab("system")}
+            className={`flex items-center gap-2 border-b-2 px-4 pb-3 pt-1 text-sm font-medium transition ${
+              activeTab === "system"
+                ? "border-accent text-foreground"
+                : "border-transparent text-muted-foreground hover:text-foreground"
+            }`}
           >
             System
-          </Button>
-          <Button
-            size="sm"
-            variant={activeTab === "users" ? "primary" : "secondary"}
+          </button>
+          <button
             onClick={() => setActiveTab("users")}
+            className={`flex items-center gap-2 border-b-2 px-4 pb-3 pt-1 text-sm font-medium transition ${
+              activeTab === "users"
+                ? "border-accent text-foreground"
+                : "border-transparent text-muted-foreground hover:text-foreground"
+            }`}
           >
             User Management
-          </Button>
+          </button>
         </div>
 
         {activeTab === "profile" && <ProfileSection />}

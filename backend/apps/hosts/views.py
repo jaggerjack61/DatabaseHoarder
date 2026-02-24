@@ -1,10 +1,13 @@
+from django.utils import timezone
 from rest_framework import viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.serializers import CharField, ChoiceField, IntegerField, Serializer
+from rest_framework.views import APIView
 
 from apps.common.crypto import decrypt_text
+from apps.common.models import SiteSettings
 
 from .access import accessible_configs_for_user, accessible_databases_for_user, accessible_storage_hosts_for_user
 from .models import Database, DatabaseConfig, ReplicationPolicy, StorageHost
@@ -235,6 +238,168 @@ class DatabaseViewSet(OwnerFilteredQuerysetMixin, viewsets.ModelViewSet):
             return Response({"success": True, "message": "Database connection successful."})
         except Exception as exc:
             return Response({"success": False, "message": str(exc)})
+
+
+class ConnectionStatusView(APIView):
+    permission_classes = (IsAuthenticated,)
+
+    def get(self, request):
+        user = request.user
+        settings = SiteSettings.get()
+        force = (request.query_params.get("force", "").strip().lower() in {"1", "true", "yes"})
+        now = timezone.now()
+        interval_seconds = max(1, settings.connection_check_interval_seconds)
+        last_check = settings.last_connection_check_at
+        cached_payload = settings.last_connection_check_payload or {}
+        if not force and last_check and (now - last_check).total_seconds() < interval_seconds and cached_payload:
+            return Response(
+                {
+                    "checked_at": cached_payload.get("checked_at"),
+                    "poll_interval_seconds": interval_seconds,
+                    "storage_hosts": cached_payload.get("storage_hosts", []),
+                    "databases": cached_payload.get("databases", []),
+                }
+            )
+        if user.is_admin:
+            storage_hosts = StorageHost.objects.all()
+            databases = Database.objects.all()
+        else:
+            storage_hosts = accessible_storage_hosts_for_user(user)
+            databases = accessible_databases_for_user(user)
+
+        storage_rows = []
+        for host in storage_hosts:
+            if not host.is_active:
+                storage_rows.append(
+                    {
+                        "id": host.id,
+                        "name": host.name,
+                        "address": host.address,
+                        "ssh_port": host.ssh_port,
+                        "username": host.username,
+                        "is_active": host.is_active,
+                        "success": False,
+                        "message": "Inactive",
+                    }
+                )
+                continue
+            try:
+                password = decrypt_text(host.encrypted_password) if host.encrypted_password else ""
+                test_storage_host_connection(
+                    address=host.address,
+                    ssh_port=host.ssh_port,
+                    username=host.username,
+                    password=password,
+                )
+                storage_rows.append(
+                    {
+                        "id": host.id,
+                        "name": host.name,
+                        "address": host.address,
+                        "ssh_port": host.ssh_port,
+                        "username": host.username,
+                        "is_active": host.is_active,
+                        "success": True,
+                        "message": "SSH connection successful.",
+                    }
+                )
+            except Exception as exc:
+                storage_rows.append(
+                    {
+                        "id": host.id,
+                        "name": host.name,
+                        "address": host.address,
+                        "ssh_port": host.ssh_port,
+                        "username": host.username,
+                        "is_active": host.is_active,
+                        "success": False,
+                        "message": str(exc),
+                    }
+                )
+
+        database_rows = []
+        for db in databases:
+            if not db.is_active:
+                database_rows.append(
+                    {
+                        "id": db.id,
+                        "name": db.name,
+                        "alias": db.alias,
+                        "db_type": db.db_type,
+                        "host": db.host,
+                        "port": db.port,
+                        "username": db.username,
+                        "sqlite_location": db.sqlite_location,
+                        "sqlite_path": db.sqlite_path,
+                        "is_active": db.is_active,
+                        "success": False,
+                        "message": "Inactive",
+                    }
+                )
+                continue
+            try:
+                password = decrypt_text(db.encrypted_password) if db.encrypted_password else ""
+                test_database_connection(
+                    db_type=db.db_type,
+                    host=db.host,
+                    port=db.port,
+                    username=db.username,
+                    password=password,
+                    sqlite_location=db.sqlite_location,
+                    sqlite_path=db.sqlite_path,
+                )
+                database_rows.append(
+                    {
+                        "id": db.id,
+                        "name": db.name,
+                        "alias": db.alias,
+                        "db_type": db.db_type,
+                        "host": db.host,
+                        "port": db.port,
+                        "username": db.username,
+                        "sqlite_location": db.sqlite_location,
+                        "sqlite_path": db.sqlite_path,
+                        "is_active": db.is_active,
+                        "success": True,
+                        "message": "Database connection successful.",
+                    }
+                )
+            except Exception as exc:
+                database_rows.append(
+                    {
+                        "id": db.id,
+                        "name": db.name,
+                        "alias": db.alias,
+                        "db_type": db.db_type,
+                        "host": db.host,
+                        "port": db.port,
+                        "username": db.username,
+                        "sqlite_location": db.sqlite_location,
+                        "sqlite_path": db.sqlite_path,
+                        "is_active": db.is_active,
+                        "success": False,
+                        "message": str(exc),
+                    }
+                )
+
+        checked_at = now.isoformat()
+        payload = {
+            "checked_at": checked_at,
+            "storage_hosts": storage_rows,
+            "databases": database_rows,
+        }
+        settings.last_connection_check_at = now
+        settings.last_connection_check_payload = payload
+        settings.save(update_fields=["last_connection_check_at", "last_connection_check_payload"])
+
+        return Response(
+            {
+                "checked_at": checked_at,
+                "poll_interval_seconds": interval_seconds,
+                "storage_hosts": storage_rows,
+                "databases": database_rows,
+            }
+        )
 
 
 class DatabaseConfigViewSet(OwnerFilteredQuerysetMixin, viewsets.ModelViewSet):

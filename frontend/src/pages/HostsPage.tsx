@@ -71,6 +71,7 @@ function freqToMinutes(value: number, unit: FreqUnit): number {
 }
 
 function minutesToDisplay(minutes: number): string {
+  if (minutes === 0) return "Interval disabled";
   if (minutes % 1440 === 0) return `${minutes / 1440} day${minutes / 1440 !== 1 ? "s" : ""}`;
   if (minutes % 60 === 0) return `${minutes / 60} hr${minutes / 60 !== 1 ? "s" : ""}`;
   return `${minutes} min`;
@@ -150,6 +151,8 @@ export function HostsPage() {
     backup_days_of_week: [] as number[],
     retention_keep_monthly_first: false,
     retention_keep_weekly_day: null as number | null,
+    retention_exception_days: null as number | null,
+    retention_exception_max_days: null as number | null,
   });
 
   // Policy form — includes independent schedule / separate retention helpers
@@ -160,7 +163,10 @@ export function HostsPage() {
     hasIndependentSchedule: false,
     replicationFreqValue: 1,
     replicationFreqUnit: "days" as FreqUnit,
+    replication_days_of_week: [] as number[],
     replication_retention_days: null as number | null,
+    replication_retention_exception_days: null as number | null,
+    replication_retention_exception_max_days: null as number | null,
   });
 
   // Lookup maps
@@ -238,13 +244,20 @@ export function HostsPage() {
     e.preventDefault();
     if (!accessToken || !configForm.database) return;
     try {
+      const frequencyMinutes = freqToMinutes(configForm.frequencyValue, configForm.frequencyUnit);
+      if (frequencyMinutes === 0 && configForm.backup_days_of_week.length === 0) {
+        setError("Select at least one weekday or set a backup interval greater than 0.");
+        return;
+      }
       await createConfig(accessToken, {
         database: configForm.database,
-        backup_frequency_minutes: freqToMinutes(configForm.frequencyValue, configForm.frequencyUnit),
+        backup_frequency_minutes: frequencyMinutes,
         retention_days: configForm.retention_days,
         backup_days_of_week: configForm.backup_days_of_week,
         retention_keep_monthly_first: configForm.retention_keep_monthly_first,
         retention_keep_weekly_day: configForm.retention_keep_weekly_day,
+        retention_exception_days: configForm.retention_exception_days,
+        retention_exception_max_days: configForm.retention_exception_max_days,
         enabled: true,
       });
       setOpenConfig(false);
@@ -418,7 +431,10 @@ export function HostsPage() {
         replication_frequency_minutes: policyForm.hasIndependentSchedule
           ? freqToMinutes(policyForm.replicationFreqValue, policyForm.replicationFreqUnit)
           : null,
+        replication_days_of_week: policyForm.hasIndependentSchedule ? policyForm.replication_days_of_week : [],
         replication_retention_days: policyForm.replication_retention_days,
+        replication_retention_exception_days: policyForm.replication_retention_exception_days,
+        replication_retention_exception_max_days: policyForm.replication_retention_exception_max_days,
       });
       setOpenPolicy(false);
       await loadData();
@@ -982,6 +998,16 @@ export function HostsPage() {
                               + Keep {DAYS_OF_WEEK[cfg.retention_keep_weekly_day].label}s
                             </p>
                           )}
+                          {cfg.retention_exception_days != null && (
+                            <p className="mt-0.5 text-xs text-muted-foreground">
+                              + Keep one every {cfg.retention_exception_days}d
+                            </p>
+                          )}
+                          {cfg.retention_exception_max_days != null && (
+                            <p className="mt-0.5 text-xs text-muted-foreground">
+                              + Stop after {cfg.retention_exception_max_days}d
+                            </p>
+                          )}
                           <p className="mt-1 text-xs text-muted-foreground">
                             Last: {cfg.last_backup_at ? new Date(cfg.last_backup_at).toLocaleString() : "Never"}
                           </p>
@@ -1024,7 +1050,12 @@ export function HostsPage() {
                         </td>
                         <td className="px-4 py-2 text-muted-foreground">{minutesToDisplay(cfg.backup_frequency_minutes)}</td>
                         <td className="px-4 py-2 text-muted-foreground">{dayNames}</td>
-                        <td className="px-4 py-2 text-muted-foreground">{cfg.retention_days}d</td>
+                        <td className="px-4 py-2 text-muted-foreground">
+                          {cfg.retention_days}d
+                          {cfg.retention_exception_days != null
+                            ? ` (+${cfg.retention_exception_days}d${cfg.retention_exception_max_days != null ? ` / ${cfg.retention_exception_max_days}d` : ""})`
+                            : ""}
+                        </td>
                         <td className="px-4 py-2 text-muted-foreground text-xs">
                           {cfg.last_backup_at ? new Date(cfg.last_backup_at).toLocaleString() : "Never"}
                         </td>
@@ -1071,7 +1102,7 @@ export function HostsPage() {
                   <Input type="number" placeholder="e.g. 1" className="flex-1"
                     value={configForm.frequencyValue}
                     onChange={(e) => setConfigForm((p) => ({ ...p, frequencyValue: Number(e.target.value) }))}
-                    min={1} required />
+                    min={0} required />
                   <select
                     className="h-12 rounded-xl border border-border bg-white px-3 text-sm shadow-soft"
                     value={configForm.frequencyUnit}
@@ -1158,6 +1189,32 @@ export function HostsPage() {
                     ))}
                   </select>
                 )}
+                <div>
+                  <label className="mb-1 block text-xs text-muted-foreground">Keep one every (days)</label>
+                  <Input
+                    type="number"
+                    placeholder="e.g. 15"
+                    value={configForm.retention_exception_days ?? ""}
+                    onChange={(e) => setConfigForm((p) => ({
+                      ...p,
+                      retention_exception_days: e.target.value ? Number(e.target.value) : null,
+                    }))}
+                    min={1}
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs text-muted-foreground">Stop after (days)</label>
+                  <Input
+                    type="number"
+                    placeholder="e.g. 365"
+                    value={configForm.retention_exception_max_days ?? ""}
+                    onChange={(e) => setConfigForm((p) => ({
+                      ...p,
+                      retention_exception_max_days: e.target.value ? Number(e.target.value) : null,
+                    }))}
+                    min={1}
+                  />
+                </div>
               </div>
               <div className="flex justify-end gap-3 pt-2">
                 <Button variant="secondary" type="button" onClick={() => setOpenConfig(false)}>Cancel</Button>
@@ -1196,6 +1253,9 @@ export function HostsPage() {
                 const cfg = configById.get(policy.database_config);
                 const db = cfg ? dbById.get(cfg.database) : undefined;
                 const sh = storageHostById.get(policy.storage_host);
+                const dayLabel = policy.replication_days_of_week && policy.replication_days_of_week.length > 0
+                  ? policy.replication_days_of_week.map((d) => DAYS_OF_WEEK[d].short).join(", ")
+                  : "";
                 const scheduleLabel = policy.replication_frequency_minutes != null
                   ? `Every ${minutesToDisplay(policy.replication_frequency_minutes)}`
                   : "After every backup";
@@ -1211,11 +1271,23 @@ export function HostsPage() {
                             <span className="mx-2 text-muted-foreground">→</span>
                             {sh?.name ?? `Host ${policy.storage_host}`}
                           </p>
-                          <p className="mt-1 text-sm text-muted-foreground">{scheduleLabel}</p>
+                          <p className="mt-1 text-sm text-muted-foreground">
+                            {scheduleLabel}{dayLabel ? ` · ${dayLabel}` : ""}
+                          </p>
                           <p className="mt-1 text-xs text-muted-foreground">Path: {policy.remote_path}</p>
                           {policy.replication_retention_days != null && (
                             <p className="mt-0.5 text-xs text-muted-foreground">
                               Retain replicas {policy.replication_retention_days}d
+                            </p>
+                          )}
+                          {policy.replication_retention_exception_days != null && (
+                            <p className="mt-0.5 text-xs text-muted-foreground">
+                              Keep one every {policy.replication_retention_exception_days}d
+                            </p>
+                          )}
+                          {policy.replication_retention_exception_max_days != null && (
+                            <p className="mt-0.5 text-xs text-muted-foreground">
+                              Stop after {policy.replication_retention_exception_max_days}d
                             </p>
                           )}
                           <p className="mt-0.5 text-xs text-muted-foreground">
@@ -1252,6 +1324,9 @@ export function HostsPage() {
                     const cfg = configById.get(policy.database_config);
                     const db = cfg ? dbById.get(cfg.database) : undefined;
                     const sh = storageHostById.get(policy.storage_host);
+                    const dayLabel = policy.replication_days_of_week && policy.replication_days_of_week.length > 0
+                      ? policy.replication_days_of_week.map((d) => DAYS_OF_WEEK[d].short).join(", ")
+                      : "";
                     const scheduleLabel = policy.replication_frequency_minutes != null
                       ? minutesToDisplay(policy.replication_frequency_minutes)
                       : "After backup";
@@ -1259,9 +1334,13 @@ export function HostsPage() {
                       <tr key={policy.id} className="hover:bg-surface/50 transition-colors">
                         <td className="px-4 py-2 font-medium text-foreground">{db?.name ?? `Config ${policy.database_config}`}</td>
                         <td className="px-4 py-2 text-muted-foreground">{sh?.name ?? `Host ${policy.storage_host}`}</td>
-                        <td className="px-4 py-2 text-muted-foreground">{scheduleLabel}</td>
                         <td className="px-4 py-2 text-muted-foreground">
-                          {policy.replication_retention_days != null ? `${policy.replication_retention_days}d` : "—"}
+                          {scheduleLabel}{dayLabel ? ` · ${dayLabel}` : ""}
+                        </td>
+                        <td className="px-4 py-2 text-muted-foreground">
+                          {policy.replication_retention_days != null
+                            ? `${policy.replication_retention_days}d${policy.replication_retention_exception_days != null ? ` (+${policy.replication_retention_exception_days}d${policy.replication_retention_exception_max_days != null ? ` / ${policy.replication_retention_exception_max_days}d` : ""})` : ""}`
+                            : "—"}
                         </td>
                         <td className="px-4 py-2 text-muted-foreground">{policy.enabled ? "Enabled" : "Disabled"}</td>
                         <td className="px-4 py-2">
@@ -1352,6 +1431,34 @@ export function HostsPage() {
                     <p className="mt-1 text-xs text-muted-foreground">
                       = {minutesToDisplay(freqToMinutes(policyForm.replicationFreqValue, policyForm.replicationFreqUnit))}
                     </p>
+                    <div className="mt-3">
+                      <label className="mb-2 block text-xs text-muted-foreground">Run on (empty = every day)</label>
+                      <div className="flex flex-wrap gap-1.5">
+                        {DAYS_OF_WEEK.map((day) => {
+                          const active = policyForm.replication_days_of_week.includes(day.value);
+                          return (
+                            <button
+                              key={day.value}
+                              type="button"
+                              onClick={() => setPolicyForm((p) => ({
+                                ...p,
+                                replication_days_of_week: active
+                                  ? p.replication_days_of_week.filter((d) => d !== day.value)
+                                  : [...p.replication_days_of_week, day.value],
+                              }))}
+                              className={cn(
+                                "rounded-lg border px-2.5 py-1 text-xs font-medium transition-colors",
+                                active
+                                  ? "border-accent bg-accent/10 text-accent"
+                                  : "border-border bg-white text-muted-foreground hover:border-accent/50"
+                              )}
+                            >
+                              {day.short}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
                   </div>
                 )}
               </div>
@@ -1376,6 +1483,28 @@ export function HostsPage() {
                       value={policyForm.replication_retention_days}
                       onChange={(e) => setPolicyForm((p) => ({ ...p, replication_retention_days: Number(e.target.value) }))}
                       min={1} />
+                    <label className="mb-1 mt-2 block text-xs text-muted-foreground">Keep one every (days)</label>
+                    <Input
+                      type="number"
+                      placeholder="e.g. 15"
+                      value={policyForm.replication_retention_exception_days ?? ""}
+                      onChange={(e) => setPolicyForm((p) => ({
+                        ...p,
+                        replication_retention_exception_days: e.target.value ? Number(e.target.value) : null,
+                      }))}
+                      min={1}
+                    />
+                    <label className="mb-1 mt-2 block text-xs text-muted-foreground">Stop after (days)</label>
+                    <Input
+                      type="number"
+                      placeholder="e.g. 365"
+                      value={policyForm.replication_retention_exception_max_days ?? ""}
+                      onChange={(e) => setPolicyForm((p) => ({
+                        ...p,
+                        replication_retention_exception_max_days: e.target.value ? Number(e.target.value) : null,
+                      }))}
+                      min={1}
+                    />
                   </div>
                 )}
               </div>

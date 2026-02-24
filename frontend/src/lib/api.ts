@@ -16,6 +16,7 @@ import {
   BackupDeletionRequest,
   UserAccount,
   AccessProfile,
+  ConnectionStatusResponse,
 } from "@/types/api";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
@@ -221,6 +222,11 @@ export function testDatabaseConnectionByPayload(
   );
 }
 
+export function getConnectionStatus(accessToken: string, options?: { force?: boolean }) {
+  const query = options?.force ? "?force=1" : "";
+  return request<ConnectionStatusResponse>(`/api/hosts/connections/status/${query}`, { method: "GET" }, accessToken);
+}
+
 // ---------------------------------------------------------------------------
 // Database Configs (backup schedules per database)
 // ---------------------------------------------------------------------------
@@ -238,6 +244,8 @@ export function createConfig(
     backup_days_of_week?: number[];
     retention_keep_monthly_first?: boolean;
     retention_keep_weekly_day?: number | null;
+    retention_exception_days?: number | null;
+    retention_exception_max_days?: number | null;
     enabled: boolean;
   },
 ) {
@@ -268,7 +276,10 @@ export function createReplicationPolicy(
     remote_path: string;
     enabled: boolean;
     replication_frequency_minutes?: number | null;
+    replication_days_of_week?: number[];
     replication_retention_days?: number | null;
+    replication_retention_exception_days?: number | null;
+    replication_retention_exception_max_days?: number | null;
   },
 ) {
   return request<ReplicationPolicy>("/api/hosts/replication-policies/", { method: "POST", body: JSON.stringify(payload) }, accessToken);

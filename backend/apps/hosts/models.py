@@ -98,6 +98,16 @@ class DatabaseConfig(models.Model):
         blank=True,
         help_text="Keep backups created on this weekday (0=Mon … 6=Sun). Null = no exception.",
     )
+    retention_exception_days = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text="Keep one backup every N days beyond the standard retention window.",
+    )
+    retention_exception_max_days = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text="Stop retention exceptions after this many days.",
+    )
     last_backup_at = models.DateTimeField(null=True, blank=True)
     enabled = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -127,6 +137,11 @@ class ReplicationPolicy(models.Model):
         blank=True,
         help_text="Run replication on this independent interval (minutes). Null = after every backup.",
     )
+    replication_days_of_week = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="Weekday numbers to run replications on (0=Mon … 6=Sun). Empty list means every day.",
+    )
     last_replicated_at = models.DateTimeField(
         null=True, blank=True, help_text="Set by the independent scheduler after replication runs."
     )
@@ -135,6 +150,16 @@ class ReplicationPolicy(models.Model):
         null=True,
         blank=True,
         help_text="Delete replicated copies older than this many days. Null = no separate retention.",
+    )
+    replication_retention_exception_days = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text="Keep one replicated copy every N days beyond retention.",
+    )
+    replication_retention_exception_max_days = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text="Stop replication retention exceptions after this many days.",
     )
     created_at = models.DateTimeField(auto_now_add=True)
 
