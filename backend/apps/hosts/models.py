@@ -38,6 +38,11 @@ class DatabaseType(models.TextChoices):
     SQLITE = "SQLITE", "SQLite"
 
 
+class SqliteLocation(models.TextChoices):
+    LOCAL = "LOCAL", "Local"
+    REMOTE = "REMOTE", "Remote"
+
+
 class Database(models.Model):
     """
     A database that can be backed up.
@@ -51,6 +56,8 @@ class Database(models.Model):
     port = models.PositiveIntegerField(default=5432)
     username = models.CharField(max_length=120)
     encrypted_password = models.TextField()
+    sqlite_location = models.CharField(max_length=10, choices=SqliteLocation.choices, default=SqliteLocation.LOCAL)
+    sqlite_path = models.CharField(max_length=500, blank=True, default="")
     owner = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="databases")
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)

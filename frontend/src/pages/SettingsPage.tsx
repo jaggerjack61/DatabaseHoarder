@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Navigate } from "react-router-dom";
+import { ChevronDown, ChevronRight, KeySquare, Shield, UserPlus } from "lucide-react";
 
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
@@ -61,6 +62,32 @@ function CardTitle({ children }: { children: React.ReactNode }) {
 
 function Divider() {
   return <hr className="border-border" />;
+}
+
+function CollapsibleGroup({
+  title,
+  isOpen,
+  onToggle,
+  children,
+}: {
+  title: string;
+  isOpen: boolean;
+  onToggle: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={onToggle}
+        className="flex w-full items-center justify-between text-xs font-medium text-muted-foreground"
+      >
+        <span>{title}</span>
+        {isOpen ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+      </button>
+      {isOpen && <div className="mt-2 grid gap-1">{children}</div>}
+    </div>
+  );
 }
 
 function Feedback({ message, isError }: { message: string | null; isError?: boolean }) {
@@ -345,6 +372,11 @@ function UserManagementSection() {
     granted_databases: [] as number[],
     granted_database_configs: [] as number[],
   });
+  const [profilePanelsOpen, setProfilePanelsOpen] = useState({
+    storageHosts: true,
+    databases: true,
+    configs: true,
+  });
   const [selectedUserId, setSelectedUserId] = useState<number | null>(null);
   const [accessForm, setAccessForm] = useState({
     access_profile: null as number | null,
@@ -352,6 +384,12 @@ function UserManagementSection() {
     granted_databases: [] as number[],
     granted_database_configs: [] as number[],
   });
+  const [userPanelsOpen, setUserPanelsOpen] = useState({
+    storageHosts: true,
+    databases: true,
+    configs: true,
+  });
+  const [activeTab, setActiveTab] = useState<"create" | "profiles" | "assign">("create");
 
   const load = async () => {
     if (!accessToken) return;
@@ -494,72 +532,96 @@ function UserManagementSection() {
       <CardTitle>User Management</CardTitle>
       <Divider />
 
-      <SettingRow label="Create User" hint="Users cannot access Settings and can only see resources assigned below.">
-        <div className="max-w-xl space-y-2">
-          <Input placeholder="Username" value={newUser.username} onChange={(e) => setNewUser((prev) => ({ ...prev, username: e.target.value }))} />
-          <Input placeholder="Email" value={newUser.email} onChange={(e) => setNewUser((prev) => ({ ...prev, email: e.target.value }))} />
-          <Input type="password" placeholder="Temporary password" value={newUser.password} onChange={(e) => setNewUser((prev) => ({ ...prev, password: e.target.value }))} />
-          <select
-            className="h-10 w-full rounded-xl border border-border bg-white px-3 text-sm"
-            value={newUser.role}
-            onChange={(e) => setNewUser((prev) => ({ ...prev, role: e.target.value as "ADMIN" | "USER" }))}
+      <div className="mb-6 flex gap-2 border-b border-border">
+        {[
+          { id: "create", label: "Create User", icon: UserPlus },
+          { id: "profiles", label: "Access Profiles", icon: Shield },
+          { id: "assign", label: "Assign Access", icon: KeySquare },
+        ].map((tab) => (
+          <button
+            key={tab.id}
+            onClick={() => setActiveTab(tab.id as "create" | "profiles" | "assign")}
+            className={`flex items-center gap-2 border-b-2 px-4 pb-3 pt-1 text-sm font-medium transition ${
+              activeTab === tab.id
+                ? "border-accent text-foreground"
+                : "border-transparent text-muted-foreground hover:text-foreground"
+            }`}
           >
-            <option value="USER">USER</option>
-            <option value="ADMIN">ADMIN</option>
-          </select>
-          <select
-            className="h-10 w-full rounded-xl border border-border bg-white px-3 text-sm"
-            value={newUser.access_profile ?? ""}
-            onChange={(e) => setNewUser((prev) => ({ ...prev, access_profile: e.target.value ? Number(e.target.value) : null }))}
-          >
-            <option value="">No access profile</option>
-            {accessProfiles.map((profile) => (
-              <option key={profile.id} value={profile.id}>{profile.name}</option>
-            ))}
-          </select>
-          <Button size="sm" onClick={() => void handleCreateUser()} disabled={!newUser.username || !newUser.password}>
-            Add User
-          </Button>
-        </div>
-      </SettingRow>
+            <tab.icon className="h-4 w-4" />
+            {tab.label}
+          </button>
+        ))}
+      </div>
 
-      <Divider />
-
-      <SettingRow label="Access Profiles" hint="Create reusable profiles and assign them to users.">
-        <div className="space-y-3">
+      {activeTab === "create" && (
+        <SettingRow label="Create User" hint="Users cannot access Settings and can only see resources assigned below.">
           <div className="max-w-xl space-y-2">
-            <Input
-              placeholder="Profile name"
-              value={profileForm.name}
-              onChange={(e) => setProfileForm((prev) => ({ ...prev, name: e.target.value }))}
-            />
-            <Input
-              placeholder="Description (optional)"
-              value={profileForm.description}
-              onChange={(e) => setProfileForm((prev) => ({ ...prev, description: e.target.value }))}
-            />
-            <Button size="sm" variant="secondary" onClick={() => void handleCreateProfile()} disabled={!profileForm.name}>
-              Create Profile
+            <Input placeholder="Username" value={newUser.username} onChange={(e) => setNewUser((prev) => ({ ...prev, username: e.target.value }))} />
+            <Input placeholder="Email" value={newUser.email} onChange={(e) => setNewUser((prev) => ({ ...prev, email: e.target.value }))} />
+            <Input type="password" placeholder="Temporary password" value={newUser.password} onChange={(e) => setNewUser((prev) => ({ ...prev, password: e.target.value }))} />
+            <select
+              className="h-10 w-full rounded-xl border border-border bg-white px-3 text-sm"
+              value={newUser.role}
+              onChange={(e) => setNewUser((prev) => ({ ...prev, role: e.target.value as "ADMIN" | "USER" }))}
+            >
+              <option value="USER">USER</option>
+              <option value="ADMIN">ADMIN</option>
+            </select>
+            <select
+              className="h-10 w-full rounded-xl border border-border bg-white px-3 text-sm"
+              value={newUser.access_profile ?? ""}
+              onChange={(e) => setNewUser((prev) => ({ ...prev, access_profile: e.target.value ? Number(e.target.value) : null }))}
+            >
+              <option value="">No access profile</option>
+              {accessProfiles.map((profile) => (
+                <option key={profile.id} value={profile.id}>{profile.name}</option>
+              ))}
+            </select>
+            <Button size="sm" onClick={() => void handleCreateUser()} disabled={!newUser.username || !newUser.password}>
+              Add User
             </Button>
           </div>
+        </SettingRow>
+      )}
 
-          <select
-            className="h-10 w-full rounded-xl border border-border bg-white px-3 text-sm"
-            value={selectedProfileId ?? ""}
-            onChange={(e) => setSelectedProfileId(Number(e.target.value))}
-            disabled={loading || accessProfiles.length === 0}
-          >
-            <option value="" disabled>{accessProfiles.length ? "Select profile" : "No profiles yet"}</option>
-            {accessProfiles.map((profile) => (
-              <option key={profile.id} value={profile.id}>{profile.name}</option>
-            ))}
-          </select>
+      {activeTab === "profiles" && (
+        <SettingRow label="Access Profiles" hint="Create reusable profiles and assign them to users.">
+          <div className="space-y-3">
+            <div className="max-w-xl space-y-2">
+              <Input
+                placeholder="Profile name"
+                value={profileForm.name}
+                onChange={(e) => setProfileForm((prev) => ({ ...prev, name: e.target.value }))}
+              />
+              <Input
+                placeholder="Description (optional)"
+                value={profileForm.description}
+                onChange={(e) => setProfileForm((prev) => ({ ...prev, description: e.target.value }))}
+              />
+              <Button size="sm" variant="secondary" onClick={() => void handleCreateProfile()} disabled={!profileForm.name}>
+                Create Profile
+              </Button>
+            </div>
 
-          {selectedProfileId && (
-            <>
-              <div>
-                <p className="text-xs font-medium text-muted-foreground">Storage Hosts</p>
-                <div className="mt-2 grid gap-1">
+            <select
+              className="h-10 w-full rounded-xl border border-border bg-white px-3 text-sm"
+              value={selectedProfileId ?? ""}
+              onChange={(e) => setSelectedProfileId(Number(e.target.value))}
+              disabled={loading || accessProfiles.length === 0}
+            >
+              <option value="" disabled>{accessProfiles.length ? "Select profile" : "No profiles yet"}</option>
+              {accessProfiles.map((profile) => (
+                <option key={profile.id} value={profile.id}>{profile.name}</option>
+              ))}
+            </select>
+
+            {selectedProfileId && (
+              <>
+                <CollapsibleGroup
+                  title="Storage Hosts"
+                  isOpen={profilePanelsOpen.storageHosts}
+                  onToggle={() => setProfilePanelsOpen((prev) => ({ ...prev, storageHosts: !prev.storageHosts }))}
+                >
                   {storageHosts.map((host) => (
                     <label key={host.id} className="flex items-center gap-2 text-sm">
                       <input
@@ -576,12 +638,13 @@ function UserManagementSection() {
                       {host.name}
                     </label>
                   ))}
-                </div>
-              </div>
+                </CollapsibleGroup>
 
-              <div>
-                <p className="text-xs font-medium text-muted-foreground">Databases</p>
-                <div className="mt-2 grid gap-1">
+                <CollapsibleGroup
+                  title="Databases"
+                  isOpen={profilePanelsOpen.databases}
+                  onToggle={() => setProfilePanelsOpen((prev) => ({ ...prev, databases: !prev.databases }))}
+                >
                   {databases.map((db) => (
                     <label key={db.id} className="flex items-center gap-2 text-sm">
                       <input
@@ -598,12 +661,13 @@ function UserManagementSection() {
                       {db.name}
                     </label>
                   ))}
-                </div>
-              </div>
+                </CollapsibleGroup>
 
-              <div>
-                <p className="text-xs font-medium text-muted-foreground">Backup Configurations</p>
-                <div className="mt-2 grid gap-1">
+                <CollapsibleGroup
+                  title="Backup Configurations"
+                  isOpen={profilePanelsOpen.configs}
+                  onToggle={() => setProfilePanelsOpen((prev) => ({ ...prev, configs: !prev.configs }))}
+                >
                   {configs.map((cfg) => (
                     <label key={cfg.id} className="flex items-center gap-2 text-sm">
                       <input
@@ -620,50 +684,51 @@ function UserManagementSection() {
                       Config #{cfg.id}
                     </label>
                   ))}
+                </CollapsibleGroup>
+
+                <Button size="sm" onClick={() => void handleSaveProfileAccess()}>Save Profile Access</Button>
+              </>
+            )}
+          </div>
+        </SettingRow>
+      )}
+
+      {activeTab === "assign" && (
+        <SettingRow label="Assign Access" hint="Grant only the hosts, databases, and configs this user may manage.">
+          <div className="space-y-3">
+            <select
+              className="h-10 w-full rounded-xl border border-border bg-white px-3 text-sm"
+              value={selectedUserId ?? ""}
+              onChange={(e) => setSelectedUserId(Number(e.target.value))}
+              disabled={loading}
+            >
+              <option value="" disabled>Select user</option>
+              {users.filter((user) => user.role === "USER").map((user) => (
+                <option key={user.id} value={user.id}>{user.username}</option>
+              ))}
+            </select>
+
+            {selectedUserId && (
+              <>
+                <div>
+                  <p className="text-xs font-medium text-muted-foreground">Access Profile</p>
+                  <select
+                    className="mt-2 h-10 w-full rounded-xl border border-border bg-white px-3 text-sm"
+                    value={accessForm.access_profile ?? ""}
+                    onChange={(e) => setAccessForm((prev) => ({ ...prev, access_profile: e.target.value ? Number(e.target.value) : null }))}
+                  >
+                    <option value="">No profile (direct grants only)</option>
+                    {accessProfiles.map((profile) => (
+                      <option key={profile.id} value={profile.id}>{profile.name}</option>
+                    ))}
+                  </select>
                 </div>
-              </div>
 
-              <Button size="sm" onClick={() => void handleSaveProfileAccess()}>Save Profile Access</Button>
-            </>
-          )}
-        </div>
-      </SettingRow>
-
-      <Divider />
-
-      <SettingRow label="Assign Access" hint="Grant only the hosts, databases, and configs this user may manage.">
-        <div className="space-y-3">
-          <select
-            className="h-10 w-full rounded-xl border border-border bg-white px-3 text-sm"
-            value={selectedUserId ?? ""}
-            onChange={(e) => setSelectedUserId(Number(e.target.value))}
-            disabled={loading}
-          >
-            <option value="" disabled>Select user</option>
-            {users.filter((user) => user.role === "USER").map((user) => (
-              <option key={user.id} value={user.id}>{user.username}</option>
-            ))}
-          </select>
-
-          {selectedUserId && (
-            <>
-              <div>
-                <p className="text-xs font-medium text-muted-foreground">Access Profile</p>
-                <select
-                  className="mt-2 h-10 w-full rounded-xl border border-border bg-white px-3 text-sm"
-                  value={accessForm.access_profile ?? ""}
-                  onChange={(e) => setAccessForm((prev) => ({ ...prev, access_profile: e.target.value ? Number(e.target.value) : null }))}
+                <CollapsibleGroup
+                  title="Storage Hosts"
+                  isOpen={userPanelsOpen.storageHosts}
+                  onToggle={() => setUserPanelsOpen((prev) => ({ ...prev, storageHosts: !prev.storageHosts }))}
                 >
-                  <option value="">No profile (direct grants only)</option>
-                  {accessProfiles.map((profile) => (
-                    <option key={profile.id} value={profile.id}>{profile.name}</option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <p className="text-xs font-medium text-muted-foreground">Storage Hosts</p>
-                <div className="mt-2 grid gap-1">
                   {storageHosts.map((host) => (
                     <label key={host.id} className="flex items-center gap-2 text-sm">
                       <input
@@ -675,12 +740,13 @@ function UserManagementSection() {
                       {host.name}
                     </label>
                   ))}
-                </div>
-              </div>
+                </CollapsibleGroup>
 
-              <div>
-                <p className="text-xs font-medium text-muted-foreground">Databases</p>
-                <div className="mt-2 grid gap-1">
+                <CollapsibleGroup
+                  title="Databases"
+                  isOpen={userPanelsOpen.databases}
+                  onToggle={() => setUserPanelsOpen((prev) => ({ ...prev, databases: !prev.databases }))}
+                >
                   {databases.map((db) => (
                     <label key={db.id} className="flex items-center gap-2 text-sm">
                       <input
@@ -692,12 +758,13 @@ function UserManagementSection() {
                       {db.name}
                     </label>
                   ))}
-                </div>
-              </div>
+                </CollapsibleGroup>
 
-              <div>
-                <p className="text-xs font-medium text-muted-foreground">Backup Configurations</p>
-                <div className="mt-2 grid gap-1">
+                <CollapsibleGroup
+                  title="Backup Configurations"
+                  isOpen={userPanelsOpen.configs}
+                  onToggle={() => setUserPanelsOpen((prev) => ({ ...prev, configs: !prev.configs }))}
+                >
                   {configs.map((cfg) => (
                     <label key={cfg.id} className="flex items-center gap-2 text-sm">
                       <input
@@ -709,14 +776,14 @@ function UserManagementSection() {
                       Config #{cfg.id}
                     </label>
                   ))}
-                </div>
-              </div>
+                </CollapsibleGroup>
 
-              <Button size="sm" onClick={() => void handleSaveAccess()}>Save Access Grants</Button>
-            </>
-          )}
-        </div>
-      </SettingRow>
+                <Button size="sm" onClick={() => void handleSaveAccess()}>Save Access Grants</Button>
+              </>
+            )}
+          </div>
+        </SettingRow>
+      )}
 
       <Feedback message={message} isError={isError} />
     </Card>

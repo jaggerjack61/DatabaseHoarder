@@ -89,6 +89,48 @@ def _use_native_tool(binary_name: str) -> bool:
     return shutil.which(binary_name) is not None
 
 
+def _sqlite_path_for_db(db) -> str:
+    return db.sqlite_path or db.host
+
+
+def _check_remote_sqlite_source(db):
+    import paramiko
+
+    if not db.host:
+        raise ValueError("SSH host is required for remote SQLite databases.")
+    if not db.port:
+        raise ValueError("SSH port is required for remote SQLite databases.")
+    if not db.username:
+        raise ValueError("SSH username is required for remote SQLite databases.")
+    path = _sqlite_path_for_db(db)
+    if not path:
+        raise ValueError("SQLite path is required for remote SQLite databases.")
+
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    client.connect(
+        hostname=db.host,
+        port=db.port,
+        username=db.username,
+        password=db.get_password(),
+        timeout=10,
+        allow_agent=False,
+        look_for_keys=False,
+    )
+    sftp = client.open_sftp()
+    try:
+        sftp.stat(path)
+    except FileNotFoundError:
+        raise FileNotFoundError(f"SSH connection successful, but SQLite file not found at: {path}")
+    except OSError as exc:
+        if getattr(exc, "errno", None) == 2:
+            raise FileNotFoundError(f"SSH connection successful, but SQLite file not found at: {path}")
+        raise
+    finally:
+        sftp.close()
+        client.close()
+
+
 def get_backup_preflight_error(config: DatabaseConfig) -> str | None:
     """Return a user-friendly prerequisite error message, or None if checks pass."""
     db = config.database
@@ -104,7 +146,13 @@ def get_backup_preflight_error(config: DatabaseConfig) -> str | None:
         return None
 
     if db.db_type == DatabaseType.SQLITE:
-        source_path = Path(db.host)
+        if db.sqlite_location == "REMOTE":
+            try:
+                _check_remote_sqlite_source(db)
+            except Exception as exc:
+                return str(exc)
+            return None
+        source_path = Path(_sqlite_path_for_db(db))
         if not source_path.exists():
             return f"SQLite source file does not exist: {source_path}"
         return None
@@ -364,12 +412,41 @@ def _backup_mysql(config: DatabaseConfig) -> Path:
 
 def _backup_sqlite(config: DatabaseConfig) -> Path:
     db = config.database
-    # For SQLite the 'host' field holds the path to the .db file
-    src = Path(db.host)
-    if not src.exists():
-        raise FileNotFoundError(f"SQLite database not found at: {src}")
     out_path = _backup_filename(config, "db")
-    shutil.copy2(src, out_path)
+    if db.sqlite_location == "REMOTE":
+        import paramiko
+
+        path = _sqlite_path_for_db(db)
+        if not path:
+            raise FileNotFoundError("SQLite path is required for remote SQLite backups.")
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        client.connect(
+            hostname=db.host,
+            port=db.port,
+            username=db.username,
+            password=db.get_password(),
+            timeout=30,
+            allow_agent=False,
+            look_for_keys=False,
+        )
+        sftp = client.open_sftp()
+        try:
+            sftp.get(path, str(out_path))
+        except FileNotFoundError:
+            raise FileNotFoundError(f"SSH connection successful, but SQLite file not found at: {path}")
+        except OSError as exc:
+            if getattr(exc, "errno", None) == 2:
+                raise FileNotFoundError(f"SSH connection successful, but SQLite file not found at: {path}")
+            raise
+        finally:
+            sftp.close()
+            client.close()
+    else:
+        src = Path(_sqlite_path_for_db(db))
+        if not src.exists():
+            raise FileNotFoundError(f"SQLite database not found at: {src}")
+        shutil.copy2(src, out_path)
     return out_path
 
 

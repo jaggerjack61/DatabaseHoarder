@@ -166,7 +166,17 @@ export function getDatabases(accessToken: string) {
 
 export function createDatabase(
   accessToken: string,
-  payload: { name: string; db_type: DatabaseType; host: string; port: number; username: string; password?: string; is_active: boolean },
+  payload: {
+    name: string;
+    db_type: DatabaseType;
+    host: string;
+    port: number;
+    username: string;
+    password?: string;
+    sqlite_location?: "LOCAL" | "REMOTE";
+    sqlite_path?: string;
+    is_active: boolean;
+  },
 ) {
   return request<Database>(
     "/api/hosts/databases/",
@@ -193,7 +203,15 @@ export function testDatabaseConnection(accessToken: string, id: number) {
 
 export function testDatabaseConnectionByPayload(
   accessToken: string,
-  payload: { db_type: DatabaseType; host: string; port: number; username: string; password?: string },
+  payload: {
+    db_type: DatabaseType;
+    host: string;
+    port?: number;
+    username?: string;
+    password?: string;
+    sqlite_location?: "LOCAL" | "REMOTE";
+    sqlite_path?: string;
+  },
 ) {
   return request<{ success: boolean; message: string }>(
     "/api/hosts/databases/test-connection/",

@@ -23,15 +23,8 @@ export function LoginPage() {
     setError(null);
     try {
       await signIn(username, password);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Unable to sign in.";
-      if (message.toLowerCase().includes("network") || message.toLowerCase().includes("failed to fetch")) {
-        setError("Backend is not reachable. Start Django server on http://127.0.0.1:8000.");
-      } else if (message.toLowerCase().includes("no active account") || message.toLowerCase().includes("401")) {
-        setError("Invalid credentials. Please check username and password.");
-      } else {
-        setError(message);
-      }
+    } catch {
+      setError("Failed to login. Check credentials.");
     } finally {
       setPending(false);
     }

@@ -49,6 +49,7 @@ export interface StorageHost {
 }
 
 export type DatabaseType = "POSTGRES" | "MYSQL" | "SQLITE";
+export type SqliteLocation = "LOCAL" | "REMOTE";
 
 /** A database that can be backed up. The `host` field is the DB server address. */
 export interface Database {
@@ -58,6 +59,8 @@ export interface Database {
   host: string;
   port: number;
   username: string;
+  sqlite_location: SqliteLocation;
+  sqlite_path: string;
   owner: number;
   is_active: boolean;
   created_at: string;

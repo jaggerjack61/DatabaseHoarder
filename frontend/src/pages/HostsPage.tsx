@@ -41,7 +41,7 @@ import {
 } from "@/lib/api";
 import { defaultTransition, fadeUp } from "@/lib/motion";
 import { cn } from "@/lib/utils";
-import { DatabaseType, DatabaseConfig, Database, StorageHost, ReplicationPolicy } from "@/types/api";
+import { DatabaseType, DatabaseConfig, Database, StorageHost, ReplicationPolicy, SqliteLocation } from "@/types/api";
 
 type TabId = "storage-hosts" | "databases" | "configs" | "replication";
 
@@ -83,7 +83,7 @@ export function HostsPage() {
   const reduceMotion = useReducedMotion();
 
   const [activeTab, setActiveTab] = useState<TabId>("storage-hosts");
-  const [viewMode, setViewMode] = useState<"card" | "list">("card");
+  const [viewMode, setViewMode] = useState<"card" | "list">("list");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -102,7 +102,16 @@ export function HostsPage() {
   const [editingStorageHost, setEditingStorageHost] = useState<StorageHost | null>(null);
   const [editingDatabase, setEditingDatabase] = useState<Database | null>(null);
   const [editStorageHostForm, setEditStorageHostForm] = useState({ name: "", address: "", ssh_port: 22, username: "", password: "" });
-  const [editDatabaseForm, setEditDatabaseForm] = useState({ name: "", db_type: "POSTGRES" as DatabaseType, host: "", port: 5432, username: "", password: "" });
+  const [editDatabaseForm, setEditDatabaseForm] = useState({
+    name: "",
+    db_type: "POSTGRES" as DatabaseType,
+    host: "",
+    port: 5432,
+    username: "",
+    password: "",
+    sqlite_location: "LOCAL" as SqliteLocation,
+    sqlite_path: "",
+  });
 
   // Test connection state
   const [testingHostId, setTestingHostId] = useState<number | null>(null);
@@ -119,7 +128,16 @@ export function HostsPage() {
 
   // Forms
   const [storageHostForm, setStorageHostForm] = useState({ name: "", address: "", ssh_port: 22, username: "", password: "" });
-  const [databaseForm, setDatabaseForm] = useState({ name: "", db_type: "POSTGRES" as DatabaseType, host: "", port: 5432, username: "", password: "" });
+  const [databaseForm, setDatabaseForm] = useState({
+    name: "",
+    db_type: "POSTGRES" as DatabaseType,
+    host: "",
+    port: 5432,
+    username: "",
+    password: "",
+    sqlite_location: "LOCAL" as SqliteLocation,
+    sqlite_path: "",
+  });
 
   // Config form — includes flexible frequency helpers and new scheduling/retention fields
   const [configForm, setConfigForm] = useState({
@@ -191,8 +209,20 @@ export function HostsPage() {
     e.preventDefault();
     if (!accessToken) return;
     try {
-      await createDatabase(accessToken, { ...databaseForm, is_active: true });
-      setDatabaseForm({ name: "", db_type: "POSTGRES", host: "", port: 5432, username: "", password: "" });
+      const hostValue = databaseForm.db_type === "SQLITE" && databaseForm.sqlite_location === "LOCAL"
+        ? databaseForm.sqlite_path
+        : databaseForm.host;
+      await createDatabase(accessToken, { ...databaseForm, host: hostValue, is_active: true });
+      setDatabaseForm({
+        name: "",
+        db_type: "POSTGRES",
+        host: "",
+        port: 5432,
+        username: "",
+        password: "",
+        sqlite_location: "LOCAL",
+        sqlite_path: "",
+      });
       setOpenDatabase(false);
       await loadData();
     } catch { setError("Failed to create database."); }
@@ -233,7 +263,16 @@ export function HostsPage() {
   };
 
   const openEditDatabase = (db: Database) => {
-    setEditDatabaseForm({ name: db.name, db_type: db.db_type, host: db.host, port: db.port, username: db.username, password: "" });
+    setEditDatabaseForm({
+      name: db.name,
+      db_type: db.db_type,
+      host: db.host,
+      port: db.port,
+      username: db.username,
+      password: "",
+      sqlite_location: db.sqlite_location ?? "LOCAL",
+      sqlite_path: db.sqlite_path ?? "",
+    });
     setDatabaseEditTestResult(null);
     setEditingDatabase(db);
   };
@@ -242,7 +281,10 @@ export function HostsPage() {
     e.preventDefault();
     if (!accessToken || !editingDatabase) return;
     try {
-      await updateDatabase(accessToken, editingDatabase.id, editDatabaseForm);
+      const hostValue = editDatabaseForm.db_type === "SQLITE" && editDatabaseForm.sqlite_location === "LOCAL"
+        ? editDatabaseForm.sqlite_path
+        : editDatabaseForm.host;
+      await updateDatabase(accessToken, editingDatabase.id, { ...editDatabaseForm, host: hostValue });
       setEditingDatabase(null);
       await loadData();
     } catch { setError("Failed to update database."); }
@@ -307,15 +349,20 @@ export function HostsPage() {
   };
 
   const handleTestCreateDatabaseForm = async () => {
-    if (!accessToken || !databaseForm.host) return;
+    const hostValue = databaseForm.db_type === "SQLITE" && databaseForm.sqlite_location === "LOCAL"
+      ? databaseForm.sqlite_path
+      : databaseForm.host;
+    if (!accessToken || !hostValue) return;
     setTestingDatabaseCreate(true);
     try {
       const result = await testDatabaseConnectionByPayload(accessToken, {
         db_type: databaseForm.db_type,
-        host: databaseForm.host,
+        host: hostValue,
         port: databaseForm.port,
         username: databaseForm.username,
         password: databaseForm.password,
+        sqlite_location: databaseForm.sqlite_location,
+        sqlite_path: databaseForm.sqlite_path,
       });
       setDatabaseCreateTestResult(result);
     } catch (err) {
@@ -326,15 +373,20 @@ export function HostsPage() {
   };
 
   const handleTestEditDatabaseForm = async () => {
-    if (!accessToken || !editDatabaseForm.host) return;
+    const hostValue = editDatabaseForm.db_type === "SQLITE" && editDatabaseForm.sqlite_location === "LOCAL"
+      ? editDatabaseForm.sqlite_path
+      : editDatabaseForm.host;
+    if (!accessToken || !hostValue) return;
     setTestingDatabaseEdit(true);
     try {
       const result = await testDatabaseConnectionByPayload(accessToken, {
         db_type: editDatabaseForm.db_type,
-        host: editDatabaseForm.host,
+        host: hostValue,
         port: editDatabaseForm.port,
         username: editDatabaseForm.username,
         password: editDatabaseForm.password,
+        sqlite_location: editDatabaseForm.sqlite_location,
+        sqlite_path: editDatabaseForm.sqlite_path,
       });
       setDatabaseEditTestResult(result);
     } catch (err) {
@@ -364,6 +416,9 @@ export function HostsPage() {
   };
 
   const dbTypeLabel: Record<DatabaseType, string> = { POSTGRES: "PostgreSQL", MYSQL: "MySQL", SQLITE: "SQLite" };
+  const sqliteDisplayPath = (db: Database) => db.sqlite_path || db.host;
+  const sqliteHostLabel = (db: Database) =>
+    db.sqlite_location === "REMOTE" ? `${db.host}:${db.port}` : `Local · ${sqliteDisplayPath(db)}`;
 
   // -------------------------------------------------------------------------
   // View toggle component
@@ -600,8 +655,21 @@ export function HostsPage() {
                     <div className="flex items-start justify-between">
                       <div className="flex-1 min-w-0">
                         <p className="font-semibold text-foreground">{db.name}</p>
-                        <p className="mt-1 text-sm text-muted-foreground">{dbTypeLabel[db.db_type]}</p>
-                        <p className="mt-1 text-sm text-muted-foreground">{db.host}:{db.port} · {db.username}</p>
+                        {db.db_type === "SQLITE" ? (
+                          <>
+                            <p className="mt-1 text-sm text-muted-foreground">{dbTypeLabel[db.db_type]}</p>
+                            <p className="mt-1 text-sm text-muted-foreground">{sqliteHostLabel(db)}</p>
+                            <p className="mt-1 text-sm text-muted-foreground">Path: {sqliteDisplayPath(db)}</p>
+                            {db.sqlite_location === "REMOTE" && (
+                              <p className="mt-1 text-sm text-muted-foreground">User: {db.username}</p>
+                            )}
+                          </>
+                        ) : (
+                          <>
+                            <p className="mt-1 text-sm text-muted-foreground">{dbTypeLabel[db.db_type]}</p>
+                            <p className="mt-1 text-sm text-muted-foreground">{db.host}:{db.port} · {db.username}</p>
+                          </>
+                        )}
                         {testResults[`db-${db.id}`] && (
                           <p className={`mt-2 text-xs ${testResults[`db-${db.id}`].success ? "text-success" : "text-failure"}`}>
                             {testResults[`db-${db.id}`].success ? "✓" : "✗"} {testResults[`db-${db.id}`].message}
@@ -644,8 +712,14 @@ export function HostsPage() {
                     <tr key={db.id} className="hover:bg-surface/50 transition-colors">
                       <td className="px-4 py-2 font-medium text-foreground">{db.name}</td>
                       <td className="px-4 py-2 text-muted-foreground">{dbTypeLabel[db.db_type]}</td>
-                      <td className="px-4 py-2 text-muted-foreground">{db.host}:{db.port}</td>
-                      <td className="px-4 py-2 text-muted-foreground">{db.username}</td>
+                      <td className="px-4 py-2 text-muted-foreground">
+                        {db.db_type === "SQLITE"
+                          ? sqliteHostLabel(db)
+                          : `${db.host}:${db.port}`}
+                      </td>
+                      <td className="px-4 py-2 text-muted-foreground">
+                        {db.db_type === "SQLITE" && db.sqlite_location !== "REMOTE" ? "Local" : db.username}
+                      </td>
                       <td className="px-4 py-2">
                         <div className="flex items-center gap-1.5">
                           <Button type="button" variant="blue" className={ACTION_BTN} onClick={() => openEditDatabase(db)}>
@@ -692,16 +766,51 @@ export function HostsPage() {
               >
                 <option value="POSTGRES">PostgreSQL</option>
                 <option value="MYSQL">MySQL</option>
-                <option value="SQLITE">SQLite (local file path as host)</option>
+                <option value="SQLITE">SQLite</option>
               </select>
-              <Input placeholder="Host (DB server address)" value={databaseForm.host}
-                onChange={(e) => setDatabaseForm((p) => ({ ...p, host: e.target.value }))} required />
-              <Input type="number" placeholder="Port" value={databaseForm.port}
-                onChange={(e) => setDatabaseForm((p) => ({ ...p, port: Number(e.target.value) }))} required />
-              <Input placeholder="Username" value={databaseForm.username}
-                onChange={(e) => setDatabaseForm((p) => ({ ...p, username: e.target.value }))} required />
-              <Input type="password" placeholder="Password" value={databaseForm.password}
-                onChange={(e) => setDatabaseForm((p) => ({ ...p, password: e.target.value }))} />
+              {databaseForm.db_type === "SQLITE" && (
+                <>
+                  <select
+                    className="h-12 w-full rounded-xl border border-border bg-white px-4 text-sm shadow-soft"
+                    value={databaseForm.sqlite_location}
+                    onChange={(e) => setDatabaseForm((p) => ({
+                      ...p,
+                      sqlite_location: e.target.value as SqliteLocation,
+                      port: e.target.value === "REMOTE" && p.port === 5432 ? 22 : p.port,
+                    }))}
+                  >
+                    <option value="LOCAL">Local file</option>
+                    <option value="REMOTE">Remote over SSH</option>
+                  </select>
+                  <Input placeholder="SQLite file path" value={databaseForm.sqlite_path}
+                    onChange={(e) => setDatabaseForm((p) => ({ ...p, sqlite_path: e.target.value }))} required />
+                </>
+              )}
+              {databaseForm.db_type === "SQLITE" ? (
+                databaseForm.sqlite_location === "REMOTE" && (
+                  <>
+                    <Input placeholder="SSH host" value={databaseForm.host}
+                      onChange={(e) => setDatabaseForm((p) => ({ ...p, host: e.target.value }))} required />
+                    <Input type="number" placeholder="SSH port" value={databaseForm.port}
+                      onChange={(e) => setDatabaseForm((p) => ({ ...p, port: Number(e.target.value) }))} required />
+                    <Input placeholder="SSH username" value={databaseForm.username}
+                      onChange={(e) => setDatabaseForm((p) => ({ ...p, username: e.target.value }))} required />
+                    <Input type="password" placeholder="SSH password" value={databaseForm.password}
+                      onChange={(e) => setDatabaseForm((p) => ({ ...p, password: e.target.value }))} />
+                  </>
+                )
+              ) : (
+                <>
+                  <Input placeholder="Host (DB server address)" value={databaseForm.host}
+                    onChange={(e) => setDatabaseForm((p) => ({ ...p, host: e.target.value }))} required />
+                  <Input type="number" placeholder="Port" value={databaseForm.port}
+                    onChange={(e) => setDatabaseForm((p) => ({ ...p, port: Number(e.target.value) }))} required />
+                  <Input placeholder="Username" value={databaseForm.username}
+                    onChange={(e) => setDatabaseForm((p) => ({ ...p, username: e.target.value }))} required />
+                  <Input type="password" placeholder="Password" value={databaseForm.password}
+                    onChange={(e) => setDatabaseForm((p) => ({ ...p, password: e.target.value }))} />
+                </>
+              )}
               {databaseCreateTestResult && (
                 <p className={`text-xs ${databaseCreateTestResult.success ? "text-success" : "text-failure"}`}>
                   {databaseCreateTestResult.success ? "✓" : "✗"} {databaseCreateTestResult.message}
@@ -711,7 +820,13 @@ export function HostsPage() {
                 <Button variant="secondary" type="button" onClick={() => setOpenDatabase(false)}>Cancel</Button>
                 <Button variant="success" type="button"
                   onClick={() => void handleTestCreateDatabaseForm()}
-                  disabled={testingDatabaseCreate || !databaseForm.host}>
+                  disabled={testingDatabaseCreate || (
+                    databaseForm.db_type === "SQLITE"
+                      ? (databaseForm.sqlite_location === "LOCAL"
+                        ? !databaseForm.sqlite_path
+                        : !databaseForm.host || !databaseForm.sqlite_path || !databaseForm.username || !databaseForm.port)
+                      : !databaseForm.host || !databaseForm.username || !databaseForm.port
+                  )}>
                   {testingDatabaseCreate ? "Testing…" : "Test Connection"}
                 </Button>
                 <Button type="submit">Create</Button>
@@ -730,16 +845,51 @@ export function HostsPage() {
               >
                 <option value="POSTGRES">PostgreSQL</option>
                 <option value="MYSQL">MySQL</option>
-                <option value="SQLITE">SQLite (local file path as host)</option>
+                <option value="SQLITE">SQLite</option>
               </select>
-              <Input placeholder="Host (DB server address)" value={editDatabaseForm.host}
-                onChange={(e) => setEditDatabaseForm((p) => ({ ...p, host: e.target.value }))} required />
-              <Input type="number" placeholder="Port" value={editDatabaseForm.port}
-                onChange={(e) => setEditDatabaseForm((p) => ({ ...p, port: Number(e.target.value) }))} required />
-              <Input placeholder="Username" value={editDatabaseForm.username}
-                onChange={(e) => setEditDatabaseForm((p) => ({ ...p, username: e.target.value }))} required />
-              <Input type="password" placeholder="New password (leave blank to keep existing)" value={editDatabaseForm.password}
-                onChange={(e) => setEditDatabaseForm((p) => ({ ...p, password: e.target.value }))} />
+              {editDatabaseForm.db_type === "SQLITE" && (
+                <>
+                  <select
+                    className="h-12 w-full rounded-xl border border-border bg-white px-4 text-sm shadow-soft"
+                    value={editDatabaseForm.sqlite_location}
+                    onChange={(e) => setEditDatabaseForm((p) => ({
+                      ...p,
+                      sqlite_location: e.target.value as SqliteLocation,
+                      port: e.target.value === "REMOTE" && p.port === 5432 ? 22 : p.port,
+                    }))}
+                  >
+                    <option value="LOCAL">Local file</option>
+                    <option value="REMOTE">Remote over SSH</option>
+                  </select>
+                  <Input placeholder="SQLite file path" value={editDatabaseForm.sqlite_path}
+                    onChange={(e) => setEditDatabaseForm((p) => ({ ...p, sqlite_path: e.target.value }))} required />
+                </>
+              )}
+              {editDatabaseForm.db_type === "SQLITE" ? (
+                editDatabaseForm.sqlite_location === "REMOTE" && (
+                  <>
+                    <Input placeholder="SSH host" value={editDatabaseForm.host}
+                      onChange={(e) => setEditDatabaseForm((p) => ({ ...p, host: e.target.value }))} required />
+                    <Input type="number" placeholder="SSH port" value={editDatabaseForm.port}
+                      onChange={(e) => setEditDatabaseForm((p) => ({ ...p, port: Number(e.target.value) }))} required />
+                    <Input placeholder="SSH username" value={editDatabaseForm.username}
+                      onChange={(e) => setEditDatabaseForm((p) => ({ ...p, username: e.target.value }))} required />
+                    <Input type="password" placeholder="New SSH password (leave blank to keep existing)" value={editDatabaseForm.password}
+                      onChange={(e) => setEditDatabaseForm((p) => ({ ...p, password: e.target.value }))} />
+                  </>
+                )
+              ) : (
+                <>
+                  <Input placeholder="Host (DB server address)" value={editDatabaseForm.host}
+                    onChange={(e) => setEditDatabaseForm((p) => ({ ...p, host: e.target.value }))} required />
+                  <Input type="number" placeholder="Port" value={editDatabaseForm.port}
+                    onChange={(e) => setEditDatabaseForm((p) => ({ ...p, port: Number(e.target.value) }))} required />
+                  <Input placeholder="Username" value={editDatabaseForm.username}
+                    onChange={(e) => setEditDatabaseForm((p) => ({ ...p, username: e.target.value }))} required />
+                  <Input type="password" placeholder="New password (leave blank to keep existing)" value={editDatabaseForm.password}
+                    onChange={(e) => setEditDatabaseForm((p) => ({ ...p, password: e.target.value }))} />
+                </>
+              )}
               {databaseEditTestResult && (
                 <p className={`text-xs ${databaseEditTestResult.success ? "text-success" : "text-failure"}`}>
                   {databaseEditTestResult.success ? "✓" : "✗"} {databaseEditTestResult.message}
@@ -749,7 +899,13 @@ export function HostsPage() {
                 <Button variant="secondary" type="button" onClick={() => setEditingDatabase(null)}>Cancel</Button>
                 <Button variant="success" type="button"
                   onClick={() => void handleTestEditDatabaseForm()}
-                  disabled={testingDatabaseEdit || !editDatabaseForm.host}>
+                  disabled={testingDatabaseEdit || (
+                    editDatabaseForm.db_type === "SQLITE"
+                      ? (editDatabaseForm.sqlite_location === "LOCAL"
+                        ? !editDatabaseForm.sqlite_path
+                        : !editDatabaseForm.host || !editDatabaseForm.sqlite_path || !editDatabaseForm.username || !editDatabaseForm.port)
+                      : !editDatabaseForm.host || !editDatabaseForm.username || !editDatabaseForm.port
+                  )}>
                   {testingDatabaseEdit ? "Testing…" : "Test Connection"}
                 </Button>
                 <Button type="submit">Save</Button>

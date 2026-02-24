@@ -25,10 +25,12 @@ class StorageHostConnectionTestSerializer(Serializer):
 
 class DatabaseConnectionTestSerializer(Serializer):
     db_type = ChoiceField(choices=("POSTGRES", "MYSQL", "SQLITE"))
-    host = CharField(max_length=255)
-    port = IntegerField(min_value=1, max_value=65535)
+    host = CharField(max_length=255, required=False, allow_blank=True, default="")
+    port = IntegerField(min_value=1, max_value=65535, required=False)
     username = CharField(max_length=120, required=False, allow_blank=True, default="")
     password = CharField(required=False, allow_blank=True, default="")
+    sqlite_location = ChoiceField(choices=("LOCAL", "REMOTE"), required=False, default="LOCAL")
+    sqlite_path = CharField(max_length=500, required=False, allow_blank=True, default="")
 
 
 def test_storage_host_connection(address: str, ssh_port: int, username: str, password: str):
@@ -48,7 +50,15 @@ def test_storage_host_connection(address: str, ssh_port: int, username: str, pas
     client.close()
 
 
-def test_database_connection(db_type: str, host: str, port: int, username: str, password: str):
+def test_database_connection(
+    db_type: str,
+    host: str,
+    port: int | None,
+    username: str,
+    password: str,
+    sqlite_location: str = "LOCAL",
+    sqlite_path: str = "",
+):
     if db_type == "POSTGRES":
         import psycopg
 
@@ -73,10 +83,49 @@ def test_database_connection(db_type: str, host: str, port: int, username: str, 
         )
         conn.close()
     elif db_type == "SQLITE":
-        import sqlite3
+        from pathlib import Path
 
-        conn = sqlite3.connect(host)
-        conn.close()
+        if sqlite_location == "REMOTE":
+            if not host:
+                raise ValueError("SSH host is required for remote SQLite databases.")
+            if not port:
+                raise ValueError("SSH port is required for remote SQLite databases.")
+            if not username:
+                raise ValueError("SSH username is required for remote SQLite databases.")
+            if not sqlite_path:
+                raise ValueError("SQLite path is required for remote SQLite databases.")
+            import paramiko
+
+            client = paramiko.SSHClient()
+            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            client.connect(
+                host,
+                port=port,
+                username=username,
+                password=password,
+                timeout=10,
+                allow_agent=False,
+                look_for_keys=False,
+            )
+            sftp = client.open_sftp()
+            try:
+                sftp.stat(sqlite_path)
+            except FileNotFoundError:
+                raise FileNotFoundError(f"SSH connection successful, but SQLite file not found at: {sqlite_path}")
+            except OSError as exc:
+                if getattr(exc, "errno", None) == 2:
+                    raise FileNotFoundError(f"SSH connection successful, but SQLite file not found at: {sqlite_path}")
+                raise
+            finally:
+                sftp.close()
+                client.close()
+        else:
+            path = sqlite_path or host
+            if not path:
+                raise ValueError("SQLite path is required for local SQLite databases.")
+            source_path = Path(path)
+            if not source_path.exists():
+                raise FileNotFoundError(f"SQLite file not found at: {source_path}")
     else:
         raise ValueError(f"Unsupported db_type: {db_type}")
 
@@ -158,9 +207,11 @@ class DatabaseViewSet(OwnerFilteredQuerysetMixin, viewsets.ModelViewSet):
             test_database_connection(
                 db_type=data["db_type"],
                 host=data["host"],
-                port=data["port"],
+                port=data.get("port"),
                 username=data.get("username", ""),
                 password=data.get("password", ""),
+                sqlite_location=data.get("sqlite_location", "LOCAL"),
+                sqlite_path=data.get("sqlite_path", ""),
             )
             return Response({"success": True, "message": "Database connection successful."})
         except Exception as exc:
@@ -178,6 +229,8 @@ class DatabaseViewSet(OwnerFilteredQuerysetMixin, viewsets.ModelViewSet):
                 port=db.port,
                 username=db.username,
                 password=password,
+                sqlite_location=db.sqlite_location,
+                sqlite_path=db.sqlite_path,
             )
             return Response({"success": True, "message": "Database connection successful."})
         except Exception as exc:
