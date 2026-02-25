@@ -72,7 +72,7 @@ def schedule_due_replications():
         allowed_days = policy.replication_days_of_week or []
         day_due = bool(allowed_days) and now.weekday() in allowed_days
         interval_due = False
-        if policy.replication_frequency_minutes is not None:
+        if policy.replication_frequency_minutes is not None and policy.replication_frequency_minutes > 0:
             if policy.last_replicated_at is None:
                 interval_due = True
             else:

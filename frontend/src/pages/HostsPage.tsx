@@ -31,6 +31,7 @@ import {
   getConfigs,
   getDatabases,
   getReplicationPolicies,
+  getSiteSettings,
   getStorageHosts,
   testDatabaseConnection,
   testDatabaseConnectionByPayload,
@@ -154,6 +155,7 @@ export function HostsPage() {
     retention_exception_days: null as number | null,
     retention_exception_max_days: null as number | null,
   });
+  const [configTab, setConfigTab] = useState<"database" | "schedule" | "retention">("database");
 
   // Policy form — includes independent schedule / separate retention helpers
   const [policyForm, setPolicyForm] = useState({
@@ -168,6 +170,9 @@ export function HostsPage() {
     replication_retention_exception_days: null as number | null,
     replication_retention_exception_max_days: null as number | null,
   });
+  const [policyTab, setPolicyTab] = useState<"targets" | "schedule" | "retention">("targets");
+  const [defaultReplicationBasePath, setDefaultReplicationBasePath] = useState("/var/www/backups");
+  const [policyPathTouched, setPolicyPathTouched] = useState(false);
 
   // Lookup maps
   const dbById = useMemo(() => new Map(databases.map((d) => [d.id, d])), [databases]);
@@ -200,6 +205,12 @@ export function HostsPage() {
   };
 
   useEffect(() => { void loadData(); }, [accessToken]);
+  useEffect(() => {
+    if (!accessToken) return;
+    void getSiteSettings(accessToken)
+      .then((s) => setDefaultReplicationBasePath(s.default_replication_path || "/var/www/backups"))
+      .catch(() => {});
+  }, [accessToken]);
 
   // --- Submit handlers ---
   const submitStorageHost = async (e: FormEvent) => {
@@ -422,6 +433,15 @@ export function HostsPage() {
   const submitPolicy = async (e: FormEvent) => {
     e.preventDefault();
     if (!accessToken || !policyForm.database_config || !policyForm.storage_host) return;
+    const replicationMinutes = freqToMinutes(policyForm.replicationFreqValue, policyForm.replicationFreqUnit);
+    if (policyForm.hasIndependentSchedule && replicationMinutes === 0 && policyForm.replication_days_of_week.length === 0) {
+      setError("Select at least one weekday or set a replication interval greater than 0.");
+      return;
+    }
+    if (!policyForm.remote_path.trim()) {
+      setError("Remote path is required.");
+      return;
+    }
     try {
       await createReplicationPolicy(accessToken, {
         database_config: policyForm.database_config,
@@ -429,7 +449,7 @@ export function HostsPage() {
         remote_path: policyForm.remote_path,
         enabled: true,
         replication_frequency_minutes: policyForm.hasIndependentSchedule
-          ? freqToMinutes(policyForm.replicationFreqValue, policyForm.replicationFreqUnit)
+          ? replicationMinutes
           : null,
         replication_days_of_week: policyForm.hasIndependentSchedule ? policyForm.replication_days_of_week : [],
         replication_retention_days: policyForm.replication_retention_days,
@@ -446,6 +466,20 @@ export function HostsPage() {
   const sqliteDisplayPath = (db: Database) => db.sqlite_path || db.host;
   const sqliteHostLabel = (db: Database) =>
     db.sqlite_location === "REMOTE" ? `${db.host}:${db.port}` : `Local · ${sqliteDisplayPath(db)}`;
+  const normalizeReplicationBase = (value: string) => {
+    const trimmed = (value || "/var/www/backups").trim();
+    const normalized = trimmed.replace(/\/+$/, "");
+    return normalized || "/var/www/backups";
+  };
+  const buildReplicationPath = (configId: number) => {
+    const base = normalizeReplicationBase(defaultReplicationBasePath);
+    const cfg = configById.get(configId);
+    if (!cfg) return base;
+    const db = dbById.get(cfg.database);
+    const rawName = db ? dbDisplayName(db) : `config_${configId}`;
+    const safeName = rawName.trim().replace(/\s+/g, "_");
+    return safeName ? `${base}/${safeName}` : base;
+  };
 
   // -------------------------------------------------------------------------
   // View toggle component
@@ -961,7 +995,13 @@ export function HostsPage() {
             </p>
             <div className="flex items-center gap-2">
               <ViewToggle />
-              <Button onClick={() => setOpenConfig(true)} disabled={databases.length === 0}>
+              <Button
+                onClick={() => {
+                  setConfigTab("database");
+                  setOpenConfig(true);
+                }}
+                disabled={databases.length === 0}
+              >
                 <Plus className="mr-2 h-4 w-4" />Add Config
               </Button>
             </div>
@@ -1083,139 +1123,164 @@ export function HostsPage() {
                 Backups are stored locally on this server by default.
                 Create a replication policy to also send them to a storage host.
               </p>
-              {/* Database selector */}
-              <select
-                className="h-12 w-full rounded-xl border border-border bg-white px-4 text-sm shadow-soft"
-                value={configForm.database || ""}
-                onChange={(e) => setConfigForm((p) => ({ ...p, database: Number(e.target.value) }))}
-                required
-              >
-                <option value="" disabled>Select database…</option>
-                {databases.map((db) => (
-                  <option key={db.id} value={db.id}>{dbDisplayName(db)} ({dbTypeLabel[db.db_type]})</option>
+              <div className="mb-2 flex gap-2 border-b border-border">
+                {[
+                  { id: "database", label: "Database" },
+                  { id: "schedule", label: "Schedule" },
+                  { id: "retention", label: "Retention" },
+                ].map((tab) => (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => setConfigTab(tab.id as "database" | "schedule" | "retention")}
+                    className={`flex items-center gap-2 border-b-2 px-4 pb-3 pt-1 text-sm font-medium transition ${
+                      configTab === tab.id
+                        ? "border-accent text-foreground"
+                        : "border-transparent text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    {tab.label}
+                  </button>
                 ))}
-              </select>
-              {/* Frequency */}
-              <div>
-                <label className="mb-1 block text-xs text-muted-foreground">Backup frequency</label>
-                <div className="flex gap-2">
-                  <Input type="number" placeholder="e.g. 1" className="flex-1"
-                    value={configForm.frequencyValue}
-                    onChange={(e) => setConfigForm((p) => ({ ...p, frequencyValue: Number(e.target.value) }))}
-                    min={0} required />
-                  <select
-                    className="h-12 rounded-xl border border-border bg-white px-3 text-sm shadow-soft"
-                    value={configForm.frequencyUnit}
-                    onChange={(e) => setConfigForm((p) => ({ ...p, frequencyUnit: e.target.value as FreqUnit }))}
-                  >
-                    <option value="minutes">Minutes</option>
-                    <option value="hours">Hours</option>
-                    <option value="days">Days</option>
-                  </select>
-                </div>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  = {minutesToDisplay(freqToMinutes(configForm.frequencyValue, configForm.frequencyUnit))}
-                </p>
               </div>
-              {/* Days of week */}
-              <div>
-                <label className="mb-2 block text-xs text-muted-foreground">Run on (empty = every day)</label>
-                <div className="flex flex-wrap gap-1.5">
-                  {DAYS_OF_WEEK.map((day) => {
-                    const active = configForm.backup_days_of_week.includes(day.value);
-                    return (
-                      <button
-                        key={day.value}
-                        type="button"
-                        onClick={() => setConfigForm((p) => ({
-                          ...p,
-                          backup_days_of_week: active
-                            ? p.backup_days_of_week.filter((d) => d !== day.value)
-                            : [...p.backup_days_of_week, day.value],
-                        }))}
-                        className={cn(
-                          "rounded-lg border px-2.5 py-1 text-xs font-medium transition-colors",
-                          active
-                            ? "border-accent bg-accent/10 text-accent"
-                            : "border-border bg-white text-muted-foreground hover:border-accent/50"
-                        )}
+              {configTab === "database" && (
+                <select
+                  className="h-12 w-full rounded-xl border border-border bg-white px-4 text-sm shadow-soft"
+                  value={configForm.database || ""}
+                  onChange={(e) => setConfigForm((p) => ({ ...p, database: Number(e.target.value) }))}
+                  required
+                >
+                  <option value="" disabled>Select database…</option>
+                  {databases.map((db) => (
+                    <option key={db.id} value={db.id}>{dbDisplayName(db)} ({dbTypeLabel[db.db_type]})</option>
+                  ))}
+                </select>
+              )}
+              {configTab === "schedule" && (
+                <div className="space-y-3">
+                  <div>
+                    <label className="mb-1 block text-xs text-muted-foreground">Backup frequency</label>
+                    <div className="flex gap-2">
+                      <Input type="number" placeholder="e.g. 1" className="flex-1"
+                        value={configForm.frequencyValue}
+                        onChange={(e) => setConfigForm((p) => ({ ...p, frequencyValue: Number(e.target.value) }))}
+                        min={0} required />
+                      <select
+                        className="h-12 rounded-xl border border-border bg-white px-3 text-sm shadow-soft"
+                        value={configForm.frequencyUnit}
+                        onChange={(e) => setConfigForm((p) => ({ ...p, frequencyUnit: e.target.value as FreqUnit }))}
                       >
-                        {day.short}
-                      </button>
-                    );
-                  })}
+                        <option value="minutes">Minutes</option>
+                        <option value="hours">Hours</option>
+                        <option value="days">Days</option>
+                      </select>
+                    </div>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      = {minutesToDisplay(freqToMinutes(configForm.frequencyValue, configForm.frequencyUnit))}
+                    </p>
+                  </div>
+                  <div>
+                    <label className="mb-2 block text-xs text-muted-foreground">Run on (empty = every day)</label>
+                    <div className="flex flex-wrap gap-1.5">
+                      {DAYS_OF_WEEK.map((day) => {
+                        const active = configForm.backup_days_of_week.includes(day.value);
+                        return (
+                          <button
+                            key={day.value}
+                            type="button"
+                            onClick={() => setConfigForm((p) => ({
+                              ...p,
+                              backup_days_of_week: active
+                                ? p.backup_days_of_week.filter((d) => d !== day.value)
+                                : [...p.backup_days_of_week, day.value],
+                            }))}
+                            className={cn(
+                              "rounded-lg border px-2.5 py-1 text-xs font-medium transition-colors",
+                              active
+                                ? "border-accent bg-accent/10 text-accent"
+                                : "border-border bg-white text-muted-foreground hover:border-accent/50"
+                            )}
+                          >
+                            {day.short}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
                 </div>
-              </div>
-              {/* Retention */}
-              <div>
-                <label className="mb-1 block text-xs text-muted-foreground">Retention period (days)</label>
-                <Input type="number" placeholder="e.g. 7"
-                  value={configForm.retention_days}
-                  onChange={(e) => setConfigForm((p) => ({ ...p, retention_days: Number(e.target.value) }))}
-                  min={1} required />
-              </div>
-              {/* Retention exceptions */}
-              <div className="rounded-xl border border-border p-3 space-y-2">
-                <p className="text-xs font-medium text-foreground">Retention exceptions (always keep)</p>
-                <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={configForm.retention_keep_monthly_first}
-                    onChange={(e) => setConfigForm((p) => ({ ...p, retention_keep_monthly_first: e.target.checked }))}
-                    className="rounded"
-                  />
-                  Keep backup from 1st of each month
-                </label>
-                <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={configForm.retention_keep_weekly_day !== null}
-                    onChange={(e) => setConfigForm((p) => ({
-                      ...p,
-                      retention_keep_weekly_day: e.target.checked ? 0 : null,
-                    }))}
-                    className="rounded"
-                  />
-                  Keep backup from a specific weekday
-                </label>
-                {configForm.retention_keep_weekly_day !== null && (
-                  <select
-                    className="h-9 w-full rounded-xl border border-border bg-white px-3 text-sm shadow-soft"
-                    value={configForm.retention_keep_weekly_day}
-                    onChange={(e) => setConfigForm((p) => ({ ...p, retention_keep_weekly_day: Number(e.target.value) }))}
-                  >
-                    {DAYS_OF_WEEK.map((day) => (
-                      <option key={day.value} value={day.value}>{day.label}</option>
-                    ))}
-                  </select>
-                )}
-                <div>
-                  <label className="mb-1 block text-xs text-muted-foreground">Keep one every (days)</label>
-                  <Input
-                    type="number"
-                    placeholder="e.g. 15"
-                    value={configForm.retention_exception_days ?? ""}
-                    onChange={(e) => setConfigForm((p) => ({
-                      ...p,
-                      retention_exception_days: e.target.value ? Number(e.target.value) : null,
-                    }))}
-                    min={1}
-                  />
+              )}
+              {configTab === "retention" && (
+                <div className="space-y-3">
+                  <div>
+                    <label className="mb-1 block text-xs text-muted-foreground">Retention period (days)</label>
+                    <Input type="number" placeholder="e.g. 7"
+                      value={configForm.retention_days}
+                      onChange={(e) => setConfigForm((p) => ({ ...p, retention_days: Number(e.target.value) }))}
+                      min={1} required />
+                  </div>
+                  <div className="rounded-xl border border-border p-3 space-y-2">
+                    <p className="text-xs font-medium text-foreground">Retention exceptions (always keep)</p>
+                    <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={configForm.retention_keep_monthly_first}
+                        onChange={(e) => setConfigForm((p) => ({ ...p, retention_keep_monthly_first: e.target.checked }))}
+                        className="rounded"
+                      />
+                      Keep backup from 1st of each month
+                    </label>
+                    <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={configForm.retention_keep_weekly_day !== null}
+                        onChange={(e) => setConfigForm((p) => ({
+                          ...p,
+                          retention_keep_weekly_day: e.target.checked ? 0 : null,
+                        }))}
+                        className="rounded"
+                      />
+                      Keep backup from a specific weekday
+                    </label>
+                    {configForm.retention_keep_weekly_day !== null && (
+                      <select
+                        className="h-9 w-full rounded-xl border border-border bg-white px-3 text-sm shadow-soft"
+                        value={configForm.retention_keep_weekly_day}
+                        onChange={(e) => setConfigForm((p) => ({ ...p, retention_keep_weekly_day: Number(e.target.value) }))}
+                      >
+                        {DAYS_OF_WEEK.map((day) => (
+                          <option key={day.value} value={day.value}>{day.label}</option>
+                        ))}
+                      </select>
+                    )}
+                    <div>
+                      <label className="mb-1 block text-xs text-muted-foreground">Keep one every (days)</label>
+                      <Input
+                        type="number"
+                        placeholder="e.g. 15"
+                        value={configForm.retention_exception_days ?? ""}
+                        onChange={(e) => setConfigForm((p) => ({
+                          ...p,
+                          retention_exception_days: e.target.value ? Number(e.target.value) : null,
+                        }))}
+                        min={1}
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-xs text-muted-foreground">Stop after (days)</label>
+                      <Input
+                        type="number"
+                        placeholder="e.g. 365"
+                        value={configForm.retention_exception_max_days ?? ""}
+                        onChange={(e) => setConfigForm((p) => ({
+                          ...p,
+                          retention_exception_max_days: e.target.value ? Number(e.target.value) : null,
+                        }))}
+                        min={1}
+                      />
+                    </div>
+                  </div>
                 </div>
-                <div>
-                  <label className="mb-1 block text-xs text-muted-foreground">Stop after (days)</label>
-                  <Input
-                    type="number"
-                    placeholder="e.g. 365"
-                    value={configForm.retention_exception_max_days ?? ""}
-                    onChange={(e) => setConfigForm((p) => ({
-                      ...p,
-                      retention_exception_max_days: e.target.value ? Number(e.target.value) : null,
-                    }))}
-                    min={1}
-                  />
-                </div>
-              </div>
+              )}
               <div className="flex justify-end gap-3 pt-2">
                 <Button variant="secondary" type="button" onClick={() => setOpenConfig(false)}>Cancel</Button>
                 <Button type="submit">Create</Button>
@@ -1236,7 +1301,24 @@ export function HostsPage() {
             </p>
             <div className="flex items-center gap-2">
               <ViewToggle />
-              <Button onClick={() => setOpenPolicy(true)} disabled={configs.length === 0 || storageHosts.length === 0}>
+              <Button
+                onClick={() => {
+                  const configId = policyForm.database_config || configs[0]?.id || 0;
+                  setPolicyTab("targets");
+                  setPolicyPathTouched(false);
+                  if (configId) {
+                    setPolicyForm((p) => ({
+                      ...p,
+                      database_config: configId,
+                      remote_path: buildReplicationPath(configId),
+                    }));
+                  } else {
+                    setPolicyForm((p) => ({ ...p, remote_path: normalizeReplicationBase(defaultReplicationBasePath) }));
+                  }
+                  setOpenPolicy(true);
+                }}
+                disabled={configs.length === 0 || storageHosts.length === 0}
+              >
                 <Plus className="mr-2 h-4 w-4" />Add Policy
               </Button>
             </div>
@@ -1256,9 +1338,11 @@ export function HostsPage() {
                 const dayLabel = policy.replication_days_of_week && policy.replication_days_of_week.length > 0
                   ? policy.replication_days_of_week.map((d) => DAYS_OF_WEEK[d].short).join(", ")
                   : "";
-                const scheduleLabel = policy.replication_frequency_minutes != null
-                  ? `Every ${minutesToDisplay(policy.replication_frequency_minutes)}`
-                  : "After every backup";
+                const scheduleLabel = policy.replication_frequency_minutes == null
+                  ? "After every backup"
+                  : policy.replication_frequency_minutes === 0
+                    ? "On weekdays"
+                    : `Every ${minutesToDisplay(policy.replication_frequency_minutes)}`;
                 return (
                   <motion.div key={policy.id} initial={fadeUp.initial} animate={fadeUp.animate}
                     transition={reduceMotion ? { duration: 0 } : { ...defaultTransition, delay: i * 0.07 }}>
@@ -1327,9 +1411,11 @@ export function HostsPage() {
                     const dayLabel = policy.replication_days_of_week && policy.replication_days_of_week.length > 0
                       ? policy.replication_days_of_week.map((d) => DAYS_OF_WEEK[d].short).join(", ")
                       : "";
-                    const scheduleLabel = policy.replication_frequency_minutes != null
-                      ? minutesToDisplay(policy.replication_frequency_minutes)
-                      : "After backup";
+                    const scheduleLabel = policy.replication_frequency_minutes == null
+                      ? "After backup"
+                      : policy.replication_frequency_minutes === 0
+                        ? "On weekdays"
+                        : minutesToDisplay(policy.replication_frequency_minutes);
                     return (
                       <tr key={policy.id} className="hover:bg-surface/50 transition-colors">
                         <td className="px-4 py-2 font-medium text-foreground">{db?.name ?? `Config ${policy.database_config}`}</td>
@@ -1366,148 +1452,190 @@ export function HostsPage() {
               <p className="text-xs text-muted-foreground">
                 After a successful backup, copy the file to the selected storage host via SFTP.
               </p>
-              {/* Backup config */}
-              <div>
-                <label className="mb-1 block text-xs text-muted-foreground">Backup Config (database)</label>
-                <select
-                  className="h-12 w-full rounded-xl border border-border bg-white px-4 text-sm shadow-soft"
-                  value={policyForm.database_config || ""}
-                  onChange={(e) => setPolicyForm((p) => ({ ...p, database_config: Number(e.target.value) }))}
-                  required
-                >
-                  <option value="" disabled>Select backup config…</option>
-                  {configs.map((cfg) => {
-                    const db = dbById.get(cfg.database);
-                    return <option key={cfg.id} value={cfg.id}>{db?.name ?? `Config ${cfg.id}`}</option>;
-                  })}
-                </select>
+              <div className="mb-2 flex gap-2 border-b border-border">
+                {[
+                  { id: "targets", label: "Targets" },
+                  { id: "schedule", label: "Schedule" },
+                  { id: "retention", label: "Retention" },
+                ].map((tab) => (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => setPolicyTab(tab.id as "targets" | "schedule" | "retention")}
+                    className={`flex items-center gap-2 border-b-2 px-4 pb-3 pt-1 text-sm font-medium transition ${
+                      policyTab === tab.id
+                        ? "border-accent text-foreground"
+                        : "border-transparent text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
               </div>
-              {/* Storage host */}
-              <div>
-                <label className="mb-1 block text-xs text-muted-foreground">Storage Host (SSH server)</label>
-                <select
-                  className="h-12 w-full rounded-xl border border-border bg-white px-4 text-sm shadow-soft"
-                  value={policyForm.storage_host || ""}
-                  onChange={(e) => setPolicyForm((p) => ({ ...p, storage_host: Number(e.target.value) }))}
-                  required
-                >
-                  <option value="" disabled>Select storage host…</option>
-                  {storageHosts.map((sh) => (
-                    <option key={sh.id} value={sh.id}>{sh.name} ({sh.address})</option>
-                  ))}
-                </select>
-              </div>
-              <Input placeholder="Remote path (e.g. /backups/prod)" value={policyForm.remote_path}
-                onChange={(e) => setPolicyForm((p) => ({ ...p, remote_path: e.target.value }))} required />
-              {/* Independent schedule */}
-              <div className="rounded-xl border border-border p-3 space-y-2">
-                <label className="flex items-center gap-2 text-xs font-medium text-foreground cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={policyForm.hasIndependentSchedule}
-                    onChange={(e) => setPolicyForm((p) => ({ ...p, hasIndependentSchedule: e.target.checked }))}
-                    className="rounded"
-                  />
-                  Independent replication schedule (instead of after every backup)
-                </label>
-                {policyForm.hasIndependentSchedule && (
+              {policyTab === "targets" && (
+                <div className="space-y-3">
                   <div>
-                    <label className="mb-1 block text-xs text-muted-foreground">Replicate every</label>
-                    <div className="flex gap-2">
-                      <Input type="number" placeholder="e.g. 6" className="flex-1"
-                        value={policyForm.replicationFreqValue}
-                        onChange={(e) => setPolicyForm((p) => ({ ...p, replicationFreqValue: Number(e.target.value) }))}
-                        min={1} />
-                      <select
-                        className="h-12 rounded-xl border border-border bg-white px-3 text-sm shadow-soft"
-                        value={policyForm.replicationFreqUnit}
-                        onChange={(e) => setPolicyForm((p) => ({ ...p, replicationFreqUnit: e.target.value as FreqUnit }))}
-                      >
-                        <option value="minutes">Minutes</option>
-                        <option value="hours">Hours</option>
-                        <option value="days">Days</option>
-                      </select>
-                    </div>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      = {minutesToDisplay(freqToMinutes(policyForm.replicationFreqValue, policyForm.replicationFreqUnit))}
-                    </p>
-                    <div className="mt-3">
-                      <label className="mb-2 block text-xs text-muted-foreground">Run on (empty = every day)</label>
-                      <div className="flex flex-wrap gap-1.5">
-                        {DAYS_OF_WEEK.map((day) => {
-                          const active = policyForm.replication_days_of_week.includes(day.value);
-                          return (
-                            <button
-                              key={day.value}
-                              type="button"
-                              onClick={() => setPolicyForm((p) => ({
-                                ...p,
-                                replication_days_of_week: active
-                                  ? p.replication_days_of_week.filter((d) => d !== day.value)
-                                  : [...p.replication_days_of_week, day.value],
-                              }))}
-                              className={cn(
-                                "rounded-lg border px-2.5 py-1 text-xs font-medium transition-colors",
-                                active
-                                  ? "border-accent bg-accent/10 text-accent"
-                                  : "border-border bg-white text-muted-foreground hover:border-accent/50"
-                              )}
-                            >
-                              {day.short}
-                            </button>
-                          );
-                        })}
+                    <label className="mb-1 block text-xs text-muted-foreground">Backup Config (database)</label>
+                    <select
+                      className="h-12 w-full rounded-xl border border-border bg-white px-4 text-sm shadow-soft"
+                      value={policyForm.database_config || ""}
+                      onChange={(e) => {
+                        const nextId = Number(e.target.value);
+                        setPolicyForm((p) => ({
+                          ...p,
+                          database_config: nextId,
+                          remote_path: policyPathTouched ? p.remote_path : buildReplicationPath(nextId),
+                        }));
+                      }}
+                      required
+                    >
+                      <option value="" disabled>Select backup config…</option>
+                      {configs.map((cfg) => {
+                        const db = dbById.get(cfg.database);
+                        return <option key={cfg.id} value={cfg.id}>{db?.name ?? `Config ${cfg.id}`}</option>;
+                      })}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs text-muted-foreground">Storage Host (SSH server)</label>
+                    <select
+                      className="h-12 w-full rounded-xl border border-border bg-white px-4 text-sm shadow-soft"
+                      value={policyForm.storage_host || ""}
+                      onChange={(e) => setPolicyForm((p) => ({ ...p, storage_host: Number(e.target.value) }))}
+                      required
+                    >
+                      <option value="" disabled>Select storage host…</option>
+                      {storageHosts.map((sh) => (
+                        <option key={sh.id} value={sh.id}>{sh.name} ({sh.address})</option>
+                      ))}
+                    </select>
+                  </div>
+                  <Input
+                    placeholder="Remote path (e.g. /backups/prod)"
+                    value={policyForm.remote_path}
+                    onChange={(e) => {
+                      setPolicyPathTouched(true);
+                      setPolicyForm((p) => ({ ...p, remote_path: e.target.value }));
+                    }}
+                    required
+                  />
+                </div>
+              )}
+              {policyTab === "schedule" && (
+                <div className="space-y-3">
+                  <div className="rounded-xl border border-border p-3 space-y-2">
+                    <label className="flex items-center gap-2 text-xs font-medium text-foreground cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={policyForm.hasIndependentSchedule}
+                        onChange={(e) => setPolicyForm((p) => ({ ...p, hasIndependentSchedule: e.target.checked }))}
+                        className="rounded"
+                      />
+                      Independent replication schedule (instead of after every backup)
+                    </label>
+                    {policyForm.hasIndependentSchedule && (
+                      <div>
+                        <label className="mb-1 block text-xs text-muted-foreground">Replicate every</label>
+                        <div className="flex gap-2">
+                          <Input type="number" placeholder="e.g. 6" className="flex-1"
+                            value={policyForm.replicationFreqValue}
+                            onChange={(e) => setPolicyForm((p) => ({ ...p, replicationFreqValue: Number(e.target.value) }))}
+                            min={0} />
+                          <select
+                            className="h-12 rounded-xl border border-border bg-white px-3 text-sm shadow-soft"
+                            value={policyForm.replicationFreqUnit}
+                            onChange={(e) => setPolicyForm((p) => ({ ...p, replicationFreqUnit: e.target.value as FreqUnit }))}
+                          >
+                            <option value="minutes">Minutes</option>
+                            <option value="hours">Hours</option>
+                            <option value="days">Days</option>
+                          </select>
+                        </div>
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          = {minutesToDisplay(freqToMinutes(policyForm.replicationFreqValue, policyForm.replicationFreqUnit))}
+                        </p>
+                        <div className="mt-3">
+                          <label className="mb-2 block text-xs text-muted-foreground">Run on (empty = every day)</label>
+                          <div className="flex flex-wrap gap-1.5">
+                            {DAYS_OF_WEEK.map((day) => {
+                              const active = policyForm.replication_days_of_week.includes(day.value);
+                              return (
+                                <button
+                                  key={day.value}
+                                  type="button"
+                                  onClick={() => setPolicyForm((p) => ({
+                                    ...p,
+                                    replication_days_of_week: active
+                                      ? p.replication_days_of_week.filter((d) => d !== day.value)
+                                      : [...p.replication_days_of_week, day.value],
+                                  }))}
+                                  className={cn(
+                                    "rounded-lg border px-2.5 py-1 text-xs font-medium transition-colors",
+                                    active
+                                      ? "border-accent bg-accent/10 text-accent"
+                                      : "border-border bg-white text-muted-foreground hover:border-accent/50"
+                                  )}
+                                >
+                                  {day.short}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
                       </div>
-                    </div>
+                    )}
                   </div>
-                )}
-              </div>
-              {/* Separate retention */}
-              <div className="rounded-xl border border-border p-3 space-y-2">
-                <label className="flex items-center gap-2 text-xs font-medium text-foreground cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={policyForm.replication_retention_days !== null}
-                    onChange={(e) => setPolicyForm((p) => ({
-                      ...p,
-                      replication_retention_days: e.target.checked ? 30 : null,
-                    }))}
-                    className="rounded"
-                  />
-                  Separate retention for replicated copies
-                </label>
-                {policyForm.replication_retention_days !== null && (
-                  <div>
-                    <label className="mb-1 block text-xs text-muted-foreground">Retain replicas (days)</label>
-                    <Input type="number" placeholder="e.g. 30"
-                      value={policyForm.replication_retention_days}
-                      onChange={(e) => setPolicyForm((p) => ({ ...p, replication_retention_days: Number(e.target.value) }))}
-                      min={1} />
-                    <label className="mb-1 mt-2 block text-xs text-muted-foreground">Keep one every (days)</label>
-                    <Input
-                      type="number"
-                      placeholder="e.g. 15"
-                      value={policyForm.replication_retention_exception_days ?? ""}
-                      onChange={(e) => setPolicyForm((p) => ({
-                        ...p,
-                        replication_retention_exception_days: e.target.value ? Number(e.target.value) : null,
-                      }))}
-                      min={1}
-                    />
-                    <label className="mb-1 mt-2 block text-xs text-muted-foreground">Stop after (days)</label>
-                    <Input
-                      type="number"
-                      placeholder="e.g. 365"
-                      value={policyForm.replication_retention_exception_max_days ?? ""}
-                      onChange={(e) => setPolicyForm((p) => ({
-                        ...p,
-                        replication_retention_exception_max_days: e.target.value ? Number(e.target.value) : null,
-                      }))}
-                      min={1}
-                    />
+                </div>
+              )}
+              {policyTab === "retention" && (
+                <div className="space-y-3">
+                  <div className="rounded-xl border border-border p-3 space-y-2">
+                    <label className="flex items-center gap-2 text-xs font-medium text-foreground cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={policyForm.replication_retention_days !== null}
+                        onChange={(e) => setPolicyForm((p) => ({
+                          ...p,
+                          replication_retention_days: e.target.checked ? 30 : null,
+                        }))}
+                        className="rounded"
+                      />
+                      Separate retention for replicated copies
+                    </label>
+                    {policyForm.replication_retention_days !== null && (
+                      <div>
+                        <label className="mb-1 block text-xs text-muted-foreground">Retain replicas (days)</label>
+                        <Input type="number" placeholder="e.g. 30"
+                          value={policyForm.replication_retention_days}
+                          onChange={(e) => setPolicyForm((p) => ({ ...p, replication_retention_days: Number(e.target.value) }))}
+                          min={1} />
+                        <label className="mb-1 mt-2 block text-xs text-muted-foreground">Keep one every (days)</label>
+                        <Input
+                          type="number"
+                          placeholder="e.g. 15"
+                          value={policyForm.replication_retention_exception_days ?? ""}
+                          onChange={(e) => setPolicyForm((p) => ({
+                            ...p,
+                            replication_retention_exception_days: e.target.value ? Number(e.target.value) : null,
+                          }))}
+                          min={1}
+                        />
+                        <label className="mb-1 mt-2 block text-xs text-muted-foreground">Stop after (days)</label>
+                        <Input
+                          type="number"
+                          placeholder="e.g. 365"
+                          value={policyForm.replication_retention_exception_max_days ?? ""}
+                          onChange={(e) => setPolicyForm((p) => ({
+                            ...p,
+                            replication_retention_exception_max_days: e.target.value ? Number(e.target.value) : null,
+                          }))}
+                          min={1}
+                        />
+                      </div>
+                    )}
                   </div>
-                )}
-              </div>
+                </div>
+              )}
               <div className="flex justify-end gap-3 pt-2">
                 <Button variant="secondary" type="button" onClick={() => setOpenPolicy(false)}>Cancel</Button>
                 <Button type="submit">Create</Button>

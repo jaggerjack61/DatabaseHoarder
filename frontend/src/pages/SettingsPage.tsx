@@ -207,7 +207,9 @@ function SystemSection() {
     manual_backup_throttle_rate: "",
     backup_execution_mode: "auto",
     connection_check_interval_seconds: 300,
+    default_replication_path: "/var/www/backups",
   });
+  const [baselineForm, setBaselineForm] = useState<SiteSettings | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveMsg, setSaveMsg] = useState<string | null>(null);
   const [saveErr, setSaveErr] = useState(false);
@@ -216,10 +218,17 @@ function SystemSection() {
 
   useEffect(() => {
     if (!accessToken) return;
-    void getSiteSettings(accessToken).then((s) => {
-      setSettings(s);
-      setForm({ ...s });
-    });
+    void getSiteSettings(accessToken)
+      .then((s) => {
+        setSettings(s);
+        setForm({ ...s });
+        setBaselineForm(s);
+      })
+      .catch((err) => {
+        setSaveErr(true);
+        setSaveMsg(err instanceof Error ? err.message : "Failed to load settings.");
+        setBaselineForm((prev) => prev ?? form);
+      });
   }, [accessToken]);
 
   const handleSave = async () => {
@@ -230,6 +239,7 @@ function SystemSection() {
       const updated = await updateSiteSettings(accessToken, form);
       setSettings(updated);
       setForm({ ...updated });
+      setBaselineForm(updated);
       setSaveErr(false);
       setSaveMsg("Settings saved.");
     } catch (err) {
@@ -254,11 +264,15 @@ function SystemSection() {
     }
   };
 
-  const isDirty = settings !== null && (
-    form.restore_throttle_rate !== settings.restore_throttle_rate ||
-    form.manual_backup_throttle_rate !== settings.manual_backup_throttle_rate ||
-    form.backup_execution_mode !== settings.backup_execution_mode ||
-    form.connection_check_interval_seconds !== settings.connection_check_interval_seconds
+  const normalizeForm = (value: SiteSettings) => ({
+    restore_throttle_rate: value.restore_throttle_rate,
+    manual_backup_throttle_rate: value.manual_backup_throttle_rate,
+    backup_execution_mode: value.backup_execution_mode,
+    connection_check_interval_seconds: value.connection_check_interval_seconds,
+    default_replication_path: value.default_replication_path,
+  });
+  const isDirty = baselineForm !== null && (
+    JSON.stringify(normalizeForm(form)) !== JSON.stringify(normalizeForm(baselineForm))
   );
 
   return (
@@ -303,6 +317,20 @@ function SystemSection() {
           min={15}
           value={form.connection_check_interval_seconds}
           onChange={(e) => setForm((f) => ({ ...f, connection_check_interval_seconds: Number(e.target.value) }))}
+        />
+      </SettingRow>
+
+      <Divider />
+
+      <SettingRow
+        label="Default Replication Path"
+        hint="Base path used to prefill replication targets; the database alias is appended."
+      >
+        <Input
+          className="max-w-lg"
+          placeholder="/var/www/backups"
+          value={form.default_replication_path}
+          onChange={(e) => setForm((f) => ({ ...f, default_replication_path: e.target.value }))}
         />
       </SettingRow>
 

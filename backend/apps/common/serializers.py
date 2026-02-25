@@ -22,4 +22,5 @@ class SiteSettingsSerializer(serializers.ModelSerializer):
             "manual_backup_throttle_rate",
             "backup_execution_mode",
             "connection_check_interval_seconds",
+            "default_replication_path",
         )

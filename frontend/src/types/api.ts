@@ -242,4 +242,5 @@ export interface SiteSettings {
   manual_backup_throttle_rate: string;
   backup_execution_mode: "python" | "native" | "auto";
   connection_check_interval_seconds: number;
+  default_replication_path: string;
 }

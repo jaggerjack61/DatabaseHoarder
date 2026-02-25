@@ -174,9 +174,21 @@ class ReplicationPolicySerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         user = self.context["request"].user
+        replication_frequency = attrs.get(
+            "replication_frequency_minutes",
+            self.instance.replication_frequency_minutes if self.instance else None,
+        )
+        replication_days = attrs.get(
+            "replication_days_of_week",
+            self.instance.replication_days_of_week if self.instance else [],
+        )
+        if replication_frequency == 0 and not replication_days:
+            raise serializers.ValidationError(
+                "replication_frequency_minutes must be greater than 0 when no replication_days_of_week are selected."
+            )
         if not user.is_admin:
-            db_config = attrs["database_config"]
-            storage_host = attrs["storage_host"]
+            db_config = attrs.get("database_config") or (self.instance.database_config if self.instance else None)
+            storage_host = attrs.get("storage_host") or (self.instance.storage_host if self.instance else None)
             if not accessible_configs_for_user(user).filter(id=db_config.id).exists():
                 raise serializers.ValidationError("Cannot create policy for a database config you cannot access.")
             if not accessible_storage_hosts_for_user(user).filter(id=storage_host.id).exists():

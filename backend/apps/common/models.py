@@ -36,6 +36,11 @@ class SiteSettings(models.Model):
         default=300,
         help_text="Interval in seconds for connection health checks.",
     )
+    default_replication_path = models.CharField(
+        max_length=500,
+        default="/var/www/backups",
+        help_text="Default base path for replication targets.",
+    )
     last_connection_check_at = models.DateTimeField(null=True, blank=True)
     last_connection_check_payload = models.JSONField(default=dict, blank=True)
 

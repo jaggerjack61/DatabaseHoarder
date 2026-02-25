@@ -98,7 +98,7 @@ function findNextReplicationOccurrence(policy: ReplicationPolicy, now: Date, nex
     return nextBackupAt;
   }
 
-  const intervalNext = policy.replication_frequency_minutes == null
+  const intervalNext = policy.replication_frequency_minutes == null || policy.replication_frequency_minutes === 0
     ? null
     : (() => {
         const frequencyMinutes = Math.max(1, policy.replication_frequency_minutes || 1);
