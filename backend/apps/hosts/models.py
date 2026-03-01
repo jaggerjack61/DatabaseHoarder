@@ -169,3 +169,36 @@ class ReplicationPolicy(models.Model):
 
     def __str__(self):
         return f"Replicate {self.database_config} → {self.storage_host}"
+
+
+class RestoreConfig(models.Model):
+    """
+    Periodically restore the latest successful backup from ``source_config``
+    into ``target_database``.
+    """
+
+    source_config = models.ForeignKey(DatabaseConfig, on_delete=models.CASCADE, related_name="restore_configs")
+    target_database = models.ForeignKey(Database, on_delete=models.CASCADE, related_name="restore_targets")
+    restore_frequency_minutes = models.PositiveIntegerField(default=1440)
+    restore_days_of_week = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="Weekday numbers to run restores on (0=Mon … 6=Sun). Empty list means every day.",
+    )
+    drop_target_on_success = models.BooleanField(
+        default=False,
+        help_text="Drop/remove the restored target after a successful restore (testing mode).",
+    )
+    last_restored_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Set by the scheduler when a restore run is enqueued.",
+    )
+    enabled = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ("-created_at",)
+
+    def __str__(self):
+        return f"Restore {self.source_config} → {self.target_database}"

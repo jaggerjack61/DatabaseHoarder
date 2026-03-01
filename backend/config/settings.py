@@ -144,6 +144,10 @@ CELERY_BEAT_SCHEDULE = {
         "task": "apps.backups.tasks.schedule_due_replications",
         "schedule": 60.0,
     },
+    "scan-due-restores-every-minute": {
+        "task": "apps.backups.tasks.schedule_due_restores",
+        "schedule": 60.0,
+    },
 }
 
 CACHES = {

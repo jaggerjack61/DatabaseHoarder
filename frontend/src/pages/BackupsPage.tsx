@@ -14,13 +14,14 @@ import {
   getConfigs,
   getDatabases,
   getReplicationPolicies,
+  getRestoreConfigs,
   getStorageHosts,
   replicateBackup,
   reviewBackupDeletionRequest,
   restoreBackup,
   triggerBackup,
 } from "@/lib/api";
-import { Backup, BackupDeletionRequest, Database, DatabaseConfig, ReplicationPolicy, StorageHost } from "@/types/api";
+import { Backup, BackupDeletionRequest, Database, DatabaseConfig, ReplicationPolicy, RestoreConfig, StorageHost } from "@/types/api";
 
 function formatBytes(bytes: number) {
   if (!bytes) return "0 B";
@@ -113,6 +114,23 @@ function findNextReplicationOccurrence(policy: ReplicationPolicy, now: Date, nex
   return minDate(intervalNext, dayNext);
 }
 
+function findNextRestoreOccurrence(restoreConfig: RestoreConfig, now: Date) {
+  if (!restoreConfig.enabled) return null;
+
+  const dayNext = nextWeekdayOccurrence(restoreConfig.restore_days_of_week ?? [], now);
+  if (restoreConfig.restore_frequency_minutes === 0) {
+    return dayNext;
+  }
+
+  const frequencyMinutes = Math.max(1, restoreConfig.restore_frequency_minutes || 1);
+  const intervalMs = frequencyMinutes * 60 * 1000;
+  const intervalStart = restoreConfig.last_restored_at
+    ? new Date(new Date(restoreConfig.last_restored_at).getTime() + intervalMs)
+    : new Date(now);
+  const intervalNext = Number.isNaN(intervalStart.getTime()) ? null : intervalStart;
+  return minDate(intervalNext, dayNext);
+}
+
 export function BackupsPage() {
   const { accessToken, user } = useAuth();
 
@@ -153,6 +171,7 @@ export function BackupsPage() {
   const [databases, setDatabases] = useState<Database[]>([]);
   const [storageHosts, setStorageHosts] = useState<StorageHost[]>([]);
   const [replicationPolicies, setReplicationPolicies] = useState<ReplicationPolicy[]>([]);
+  const [restoreConfigs, setRestoreConfigs] = useState<RestoreConfig[]>([]);
   const [selectedConfigId, setSelectedConfigId] = useState<number>(0);
   const [triggering, setTriggering] = useState(false);
   const [triggerMessage, setTriggerMessage] = useState<string | null>(null);
@@ -173,18 +192,20 @@ export function BackupsPage() {
     setLoading(true);
     setError(null);
     try {
-      const [backups, cfgs, dbs, shs, policies] = await Promise.all([
+      const [backups, cfgs, dbs, shs, policies, restores] = await Promise.all([
         getBackups(accessToken),
         getConfigs(accessToken),
         getDatabases(accessToken),
         getStorageHosts(accessToken),
         getReplicationPolicies(accessToken),
+        getRestoreConfigs(accessToken),
       ]);
       setRows(backups);
       setConfigs(cfgs);
       setDatabases(dbs);
       setStorageHosts(shs);
       setReplicationPolicies(policies);
+      setRestoreConfigs(restores);
       if (user?.role === "ADMIN") {
         const requests = await getBackupDeletionRequests(accessToken);
         setDeletionRequests(requests);
@@ -409,6 +430,27 @@ export function BackupsPage() {
     [selectedPolicies, storageHostById, upcomingBackupAt],
   );
 
+  const selectedRestoreItems = useMemo(
+    () =>
+      restoreConfigs
+        .filter((restoreConfig) => restoreConfig.source_config === selectedConfigId && restoreConfig.enabled)
+        .map((restoreConfig) => {
+          const targetDb = dbById.get(restoreConfig.target_database);
+          const targetName = targetDb
+            ? `${targetDb.name} (${targetDb.db_type})`
+            : `Database ${restoreConfig.target_database}`;
+          const nextAt = findNextRestoreOccurrence(restoreConfig, new Date());
+          return {
+            id: restoreConfig.id,
+            targetName,
+            frequencyMinutes: restoreConfig.restore_frequency_minutes,
+            dropTargetOnSuccess: restoreConfig.drop_target_on_success,
+            nextAt,
+          };
+        }),
+    [restoreConfigs, selectedConfigId, dbById],
+  );
+
   const deleteCount = checkedIds.size;
 
   return (
@@ -457,7 +499,7 @@ export function BackupsPage() {
             <p className="mt-3 text-sm text-muted-foreground">Backup scheduling is disabled for this database config.</p>
           ) : (
             <>
-              <div className="mt-3 grid gap-3 md:grid-cols-2">
+              <div className="mt-3 grid gap-3 md:grid-cols-3">
                 <div className="rounded-xl border border-border bg-muted/20 p-3">
                   <p className="text-xs uppercase tracking-wide text-muted-foreground">Next Backup</p>
                   <p className="mt-1 text-sm font-medium text-foreground">{formatScheduleTimestamp(upcomingBackupAt)}</p>
@@ -465,6 +507,10 @@ export function BackupsPage() {
                 <div className="rounded-xl border border-border bg-muted/20 p-3">
                   <p className="text-xs uppercase tracking-wide text-muted-foreground">Replication Targets</p>
                   <p className="mt-1 text-sm font-medium text-foreground">{nextReplicationItems.length}</p>
+                </div>
+                <div className="rounded-xl border border-border bg-muted/20 p-3">
+                  <p className="text-xs uppercase tracking-wide text-muted-foreground">Restore Targets</p>
+                  <p className="mt-1 text-sm font-medium text-foreground">{selectedRestoreItems.length}</p>
                 </div>
               </div>
               {nextReplicationItems.length > 0 ? (
@@ -480,6 +526,22 @@ export function BackupsPage() {
                 </div>
               ) : (
                 <p className="mt-3 text-xs text-muted-foreground">No enabled replication policies for this config.</p>
+              )}
+
+              {selectedRestoreItems.length > 0 ? (
+                <div className="mt-3 space-y-2">
+                  {selectedRestoreItems.map((item) => (
+                    <div key={item.id} className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-border/70 px-3 py-2">
+                      <p className="text-xs text-foreground">{item.targetName}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {item.frequencyMinutes === 0 ? "On selected weekdays" : `Every ${item.frequencyMinutes} min`} · {formatScheduleTimestamp(item.nextAt)}
+                        {item.dropTargetOnSuccess ? " · Drop target on success" : ""}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="mt-3 text-xs text-muted-foreground">No enabled restore configs for this backup config.</p>
               )}
             </>
           )}

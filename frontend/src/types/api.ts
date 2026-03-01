@@ -142,6 +142,21 @@ export interface ReplicationPolicy {
   created_at: string;
 }
 
+/** Periodic restore of latest successful backup from a source config to a target database. */
+export interface RestoreConfig {
+  id: number;
+  source_config: number;
+  target_database: number;
+  restore_frequency_minutes: number;
+  /** Weekday numbers (0=Mon … 6=Sun). Empty = every day. */
+  restore_days_of_week: number[];
+  /** When true, remove dropped/restored target immediately after successful restore (testing mode). */
+  drop_target_on_success: boolean;
+  last_restored_at: string | null;
+  enabled: boolean;
+  created_at: string;
+}
+
 export interface BackupReplication {
   id: number;
   storage_host: number;
@@ -210,6 +225,9 @@ export interface LiveBackupsResponse {
 export interface RestoreJob {
   id: number;
   backup: number;
+  backup_database_config: number;
+  backup_database_name: string;
+  backup_database_fallback_name: string;
   target_db: string;
   triggered_by: number | null;
   status: "PENDING" | "RUNNING" | "SUCCESS" | "FAILED";
@@ -243,4 +261,5 @@ export interface SiteSettings {
   backup_execution_mode: "python" | "native" | "auto";
   connection_check_interval_seconds: number;
   default_replication_path: string;
+  max_task_retries: number;
 }

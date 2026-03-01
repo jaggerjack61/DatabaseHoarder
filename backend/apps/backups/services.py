@@ -36,7 +36,7 @@ from django.db.models import Max
 from django.utils import timezone
 
 from apps.audit.services import create_audit_log
-from apps.hosts.models import DatabaseConfig, DatabaseType
+from apps.hosts.models import Database, DatabaseConfig, DatabaseType
 
 from .models import Backup, BackupReplication, BackupStatus, ReplicationStatus, RestoreJob, RestoreStatus
 
@@ -662,6 +662,68 @@ def _restore_mysql_python(config: DatabaseConfig, backup_path: Path, target_db: 
         conn.close()
 
 
+def _drop_postgres_target(config: DatabaseConfig, target_db: str):
+    db = config.database
+    with psycopg.connect(
+        host=db.host,
+        port=db.port,
+        user=db.username,
+        password=db.get_password(),
+        dbname="postgres",
+        autocommit=True,
+    ) as admin_conn:
+        with admin_conn.cursor() as cur:
+            quoted_target = target_db.replace('"', '""')
+            cur.execute(
+                """
+                SELECT pg_terminate_backend(pid)
+                FROM pg_stat_activity
+                WHERE datname = %s AND pid <> pg_backend_pid()
+                """,
+                (target_db,),
+            )
+            cur.execute(f'DROP DATABASE IF EXISTS "{quoted_target}"')
+
+
+def _drop_mysql_target(config: DatabaseConfig, target_db: str):
+    db = config.database
+    conn = pymysql.connect(
+        host=db.host,
+        port=db.port,
+        user=db.username,
+        password=db.get_password(),
+        charset="utf8mb4",
+        cursorclass=pymysql.cursors.Cursor,
+        autocommit=True,
+    )
+    try:
+        with conn.cursor() as cur:
+            quoted_target = target_db.replace("`", "``")
+            cur.execute(f"DROP DATABASE IF EXISTS `{quoted_target}`")
+    finally:
+        conn.close()
+
+
+def _drop_sqlite_target(target_path: str):
+    path = Path(target_path)
+    if path.exists():
+        path.unlink()
+
+
+def _drop_restored_target(config: DatabaseConfig, target_db: str):
+    db_type = config.database.db_type
+    if db_type == DatabaseType.POSTGRES:
+        _drop_postgres_target(config, target_db)
+        return
+    if db_type == DatabaseType.MYSQL:
+        _drop_mysql_target(config, target_db)
+        return
+    if db_type == DatabaseType.SQLITE:
+        _drop_sqlite_target(target_db)
+        return
+    raise ValueError(f"Unsupported database type: {db_type}")
+
+
 # ---------------------------------------------------------------------------
 # Public: execute backup
 # ---------------------------------------------------------------------------
@@ -749,7 +811,13 @@ def execute_backup(config_id: int, backup_id: int | None = None):
 # Public: execute restore
 # ---------------------------------------------------------------------------
 
-def execute_restore(backup_id: int, target_db: str, user):
+def execute_restore(
+    backup_id: int,
+    target_db: str,
+    user,
+    target_database_id: int | None = None,
+    drop_target_on_success: bool = False,
+):
     """
     Restore a successful backup.
 
@@ -757,6 +825,21 @@ def execute_restore(backup_id: int, target_db: str, user):
       - PostgreSQL / MySQL: the target database name
       - SQLite: the target file path
     """
+    backup = Backup.objects.select_related("database_config__database__owner").get(id=backup_id)
+    config = backup.database_config
+    db = config.database
+    target_database = None
+    if target_database_id is not None:
+        target_database = Database.objects.get(id=target_database_id)
+        if target_database.db_type != db.db_type:
+            raise ValueError("Target database type must match backup source database type.")
+        if db.db_type == DatabaseType.SQLITE:
+            target_db = target_database.sqlite_path or target_database.host
+            if not target_db:
+                raise ValueError("Target SQLite database must define sqlite_path or host path.")
+        else:
+            target_db = target_database.name
+
     restore_job = RestoreJob.objects.create(
         backup_id=backup_id,
         target_db=target_db,
@@ -765,9 +848,14 @@ def execute_restore(backup_id: int, target_db: str, user):
         started_at=timezone.now(),
     )
 
-    backup = Backup.objects.select_related("database_config__database__owner").get(id=backup_id)
-    config = backup.database_config
-    db = config.database
+    active_config = config
+    if target_database is not None:
+        class _RestoreContext:
+            pass
+
+        active_config = _RestoreContext()
+        active_config.database = target_database
+
     backup_path = Path(backup.file_path)
 
     if not backup_path.exists():
@@ -779,13 +867,16 @@ def execute_restore(backup_id: int, target_db: str, user):
 
     try:
         if db.db_type == DatabaseType.POSTGRES:
-            _restore_postgres(config, backup_path, target_db)
+            _restore_postgres(active_config, backup_path, target_db)
         elif db.db_type == DatabaseType.MYSQL:
-            _restore_mysql(config, backup_path, target_db)
+            _restore_mysql(active_config, backup_path, target_db)
         elif db.db_type == DatabaseType.SQLITE:
-            _restore_sqlite(config, backup_path, target_db)
+            _restore_sqlite(active_config, backup_path, target_db)
         else:
             raise ValueError(f"Unsupported database type: {db.db_type}")
+
+        if drop_target_on_success:
+            _drop_restored_target(active_config, target_db)
 
         restore_job.status = RestoreStatus.SUCCESS
         restore_job.completed_at = timezone.now()
@@ -796,7 +887,11 @@ def execute_restore(backup_id: int, target_db: str, user):
             user=user,
             action="RESTORE_SUCCESS",
             target=f"Backup:{backup.id}",
-            metadata={"target_db": target_db},
+            metadata={
+                "target_db": target_db,
+                "target_database_id": target_database.id if target_database else None,
+                "drop_target_on_success": drop_target_on_success,
+            },
         )
     except Exception as exc:
         restore_job.status = RestoreStatus.FAILED

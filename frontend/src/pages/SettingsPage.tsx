@@ -208,6 +208,7 @@ function SystemSection() {
     backup_execution_mode: "auto",
     connection_check_interval_seconds: 300,
     default_replication_path: "/var/www/backups",
+    max_task_retries: 3,
   });
   const [baselineForm, setBaselineForm] = useState<SiteSettings | null>(null);
   const [saving, setSaving] = useState(false);
@@ -270,6 +271,7 @@ function SystemSection() {
     backup_execution_mode: value.backup_execution_mode,
     connection_check_interval_seconds: value.connection_check_interval_seconds,
     default_replication_path: value.default_replication_path,
+    max_task_retries: value.max_task_retries,
   });
   const isDirty = baselineForm !== null && (
     JSON.stringify(normalizeForm(form)) !== JSON.stringify(normalizeForm(baselineForm))
@@ -331,6 +333,22 @@ function SystemSection() {
           placeholder="/var/www/backups"
           value={form.default_replication_path}
           onChange={(e) => setForm((f) => ({ ...f, default_replication_path: e.target.value }))}
+        />
+      </SettingRow>
+
+      <Divider />
+
+      <SettingRow
+        label="Max Task Retries"
+        hint="Number of retry attempts for failed backup, replication, or restore tasks before marking as failed."
+      >
+        <Input
+          className="max-w-xs"
+          type="number"
+          min={0}
+          max={10}
+          value={form.max_task_retries}
+          onChange={(e) => setForm((f) => ({ ...f, max_task_retries: Number(e.target.value) }))}
         />
       </SettingRow>
 

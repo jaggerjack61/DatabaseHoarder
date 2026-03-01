@@ -5,6 +5,7 @@ import {
   Server,
   Database as DatabaseIcon,
   Settings2,
+  RotateCcw,
   GitFork,
   Pencil,
   TestTube2,
@@ -23,14 +24,17 @@ import {
   createConfig,
   createDatabase,
   createReplicationPolicy,
+  createRestoreConfig,
   createStorageHost,
   deleteConfig,
   deleteDatabase,
   deleteReplicationPolicy,
+  deleteRestoreConfig,
   deleteStorageHost,
   getConfigs,
   getDatabases,
   getReplicationPolicies,
+  getRestoreConfigs,
   getSiteSettings,
   getStorageHosts,
   testDatabaseConnection,
@@ -38,18 +42,28 @@ import {
   testStorageHostConnection,
   testStorageHostConnectionByPayload,
   updateDatabase,
+  updateRestoreConfig,
   updateStorageHost,
 } from "@/lib/api";
 import { defaultTransition, fadeUp } from "@/lib/motion";
 import { cn } from "@/lib/utils";
-import { DatabaseType, DatabaseConfig, Database, StorageHost, ReplicationPolicy, SqliteLocation } from "@/types/api";
+import {
+  DatabaseType,
+  DatabaseConfig,
+  Database,
+  StorageHost,
+  ReplicationPolicy,
+  RestoreConfig,
+  SqliteLocation,
+} from "@/types/api";
 
-type TabId = "storage-hosts" | "databases" | "configs" | "replication";
+type TabId = "storage-hosts" | "databases" | "configs" | "restore" | "replication";
 
 const tabs: { id: TabId; label: string; icon: React.FC<{ className?: string }> }[] = [
   { id: "storage-hosts", label: "Storage Hosts", icon: Server },
   { id: "databases", label: "Databases", icon: DatabaseIcon },
   { id: "configs", label: "Backup Configs", icon: Settings2 },
+  { id: "restore", label: "Restore Configs", icon: RotateCcw },
   { id: "replication", label: "Replication Policies", icon: GitFork },
 ];
 
@@ -78,6 +92,12 @@ function minutesToDisplay(minutes: number): string {
   return `${minutes} min`;
 }
 
+function minutesToFreq(minutes: number): { value: number; unit: FreqUnit } {
+  if (minutes % 1440 === 0 && minutes !== 0) return { value: minutes / 1440, unit: "days" };
+  if (minutes % 60 === 0 && minutes !== 0) return { value: minutes / 60, unit: "hours" };
+  return { value: minutes, unit: "minutes" };
+}
+
 const ACTION_BTN = "h-9 min-h-0 px-3 text-xs";
 
 export function HostsPage() {
@@ -92,17 +112,20 @@ export function HostsPage() {
   const [storageHosts, setStorageHosts] = useState<StorageHost[]>([]);
   const [databases, setDatabases] = useState<Database[]>([]);
   const [configs, setConfigs] = useState<DatabaseConfig[]>([]);
+  const [restoreConfigs, setRestoreConfigs] = useState<RestoreConfig[]>([]);
   const [policies, setPolicies] = useState<ReplicationPolicy[]>([]);
 
   // Modal state
   const [openStorageHost, setOpenStorageHost] = useState(false);
   const [openDatabase, setOpenDatabase] = useState(false);
   const [openConfig, setOpenConfig] = useState(false);
+  const [openRestore, setOpenRestore] = useState(false);
   const [openPolicy, setOpenPolicy] = useState(false);
 
   // Edit state
   const [editingStorageHost, setEditingStorageHost] = useState<StorageHost | null>(null);
   const [editingDatabase, setEditingDatabase] = useState<Database | null>(null);
+  const [editingRestoreConfig, setEditingRestoreConfig] = useState<RestoreConfig | null>(null);
   const [editStorageHostForm, setEditStorageHostForm] = useState({ name: "", address: "", ssh_port: 22, username: "", password: "" });
   const [editDatabaseForm, setEditDatabaseForm] = useState({
     name: "",
@@ -157,6 +180,25 @@ export function HostsPage() {
   });
   const [configTab, setConfigTab] = useState<"database" | "schedule" | "retention">("database");
 
+  const [restoreForm, setRestoreForm] = useState({
+    source_config: 0,
+    target_database: 0,
+    frequencyValue: 1,
+    frequencyUnit: "days" as FreqUnit,
+    restore_days_of_week: [] as number[],
+    drop_target_on_success: false,
+  });
+  const [restoreTab, setRestoreTab] = useState<"targets" | "schedule" | "options">("targets");
+  const [editRestoreForm, setEditRestoreForm] = useState({
+    source_config: 0,
+    target_database: 0,
+    frequencyValue: 1,
+    frequencyUnit: "days" as FreqUnit,
+    restore_days_of_week: [] as number[],
+    drop_target_on_success: false,
+    enabled: true,
+  });
+
   // Policy form — includes independent schedule / separate retention helpers
   const [policyForm, setPolicyForm] = useState({
     database_config: 0,
@@ -184,19 +226,37 @@ export function HostsPage() {
     setLoading(true);
     setError(null);
     try {
-      const [sh, db, cf, rp] = await Promise.all([
+      const [shResult, dbResult, cfResult, rcResult, rpResult] = await Promise.allSettled([
         getStorageHosts(accessToken),
         getDatabases(accessToken),
         getConfigs(accessToken),
+        getRestoreConfigs(accessToken),
         getReplicationPolicies(accessToken),
       ]);
+
+      const sh = shResult.status === "fulfilled" ? shResult.value : [];
+      const db = dbResult.status === "fulfilled" ? dbResult.value : [];
+      const cf = cfResult.status === "fulfilled" ? cfResult.value : [];
+      const rc = rcResult.status === "fulfilled" ? rcResult.value : [];
+      const rp = rpResult.status === "fulfilled" ? rpResult.value : [];
+
       setStorageHosts(sh);
       setDatabases(db);
       setConfigs(cf);
+      setRestoreConfigs(rc);
       setPolicies(rp);
       if (db.length > 0 && configForm.database === 0) setConfigForm((p) => ({ ...p, database: db[0].id }));
+      if (cf.length > 0 && restoreForm.source_config === 0) setRestoreForm((p) => ({ ...p, source_config: cf[0].id }));
+      if (db.length > 0 && restoreForm.target_database === 0) setRestoreForm((p) => ({ ...p, target_database: db[0].id }));
       if (cf.length > 0 && policyForm.database_config === 0) setPolicyForm((p) => ({ ...p, database_config: cf[0].id }));
       if (sh.length > 0 && policyForm.storage_host === 0) setPolicyForm((p) => ({ ...p, storage_host: sh[0].id }));
+
+      const coreFailed = [shResult, dbResult, cfResult, rpResult].some((r) => r.status === "rejected");
+      if (coreFailed) {
+        setError("Unable to load some host data.");
+      } else if (rcResult.status === "rejected") {
+        setError("Restore configs are temporarily unavailable.");
+      }
     } catch {
       setError("Unable to load data.");
     } finally {
@@ -461,6 +521,80 @@ export function HostsPage() {
     } catch { setError("Failed to create replication policy."); }
   };
 
+  const submitRestoreConfig = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!accessToken || !restoreForm.source_config || !restoreForm.target_database) return;
+    try {
+      const restoreMinutes = freqToMinutes(restoreForm.frequencyValue, restoreForm.frequencyUnit);
+      if (restoreMinutes === 0 && restoreForm.restore_days_of_week.length === 0) {
+        setError("Select at least one weekday or set a restore interval greater than 0.");
+        return;
+      }
+      await createRestoreConfig(accessToken, {
+        source_config: restoreForm.source_config,
+        target_database: restoreForm.target_database,
+        restore_frequency_minutes: restoreMinutes,
+        restore_days_of_week: restoreForm.restore_days_of_week,
+        drop_target_on_success: restoreForm.drop_target_on_success,
+        enabled: true,
+      });
+      setOpenRestore(false);
+      await loadData();
+    } catch {
+      setError("Failed to create restore config.");
+    }
+  };
+
+  const openEditRestoreConfig = (restoreConfig: RestoreConfig) => {
+    const freq = minutesToFreq(restoreConfig.restore_frequency_minutes);
+    setEditRestoreForm({
+      source_config: restoreConfig.source_config,
+      target_database: restoreConfig.target_database,
+      frequencyValue: Math.max(0, freq.value),
+      frequencyUnit: freq.unit,
+      restore_days_of_week: restoreConfig.restore_days_of_week || [],
+      drop_target_on_success: restoreConfig.drop_target_on_success,
+      enabled: restoreConfig.enabled,
+    });
+    setEditingRestoreConfig(restoreConfig);
+  };
+
+  const submitEditRestoreConfig = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!accessToken || !editingRestoreConfig) return;
+    try {
+      const restoreMinutes = freqToMinutes(editRestoreForm.frequencyValue, editRestoreForm.frequencyUnit);
+      if (restoreMinutes === 0 && editRestoreForm.restore_days_of_week.length === 0) {
+        setError("Select at least one weekday or set a restore interval greater than 0.");
+        return;
+      }
+      await updateRestoreConfig(accessToken, editingRestoreConfig.id, {
+        source_config: editRestoreForm.source_config,
+        target_database: editRestoreForm.target_database,
+        restore_frequency_minutes: restoreMinutes,
+        restore_days_of_week: editRestoreForm.restore_days_of_week,
+        drop_target_on_success: editRestoreForm.drop_target_on_success,
+        enabled: editRestoreForm.enabled,
+      });
+      setEditingRestoreConfig(null);
+      await loadData();
+    } catch {
+      setError("Failed to update restore config.");
+    }
+  };
+
+  const toggleRestoreConfigEnabled = async (restoreConfig: RestoreConfig) => {
+    if (!accessToken) return;
+    try {
+      await updateRestoreConfig(accessToken, restoreConfig.id, {
+        enabled: !restoreConfig.enabled,
+      });
+      await loadData();
+    } catch {
+      setError("Failed to update restore config.");
+    }
+  };
+
   const dbTypeLabel: Record<DatabaseType, string> = { POSTGRES: "PostgreSQL", MYSQL: "MySQL", SQLITE: "SQLite" };
   const dbDisplayName = (db: Database) => db.alias || db.name;
   const sqliteDisplayPath = (db: Database) => db.sqlite_path || db.host;
@@ -479,6 +613,12 @@ export function HostsPage() {
     const rawName = db ? dbDisplayName(db) : `config_${configId}`;
     const safeName = rawName.trim().replace(/\s+/g, "_");
     return safeName ? `${base}/${safeName}` : base;
+  };
+  const availableRestoreTargets = (sourceConfigId: number) => {
+    const sourceConfig = configById.get(sourceConfigId);
+    const sourceDb = sourceConfig ? dbById.get(sourceConfig.database) : undefined;
+    if (!sourceDb) return databases;
+    return databases.filter((db) => db.db_type === sourceDb.db_type);
   };
 
   // -------------------------------------------------------------------------
@@ -1284,6 +1424,433 @@ export function HostsPage() {
               <div className="flex justify-end gap-3 pt-2">
                 <Button variant="secondary" type="button" onClick={() => setOpenConfig(false)}>Cancel</Button>
                 <Button type="submit">Create</Button>
+              </div>
+            </form>
+          </Modal>
+        </>
+      )}
+
+      {/* ------------------------------------------------------------------ */}
+      {/* RESTORE CONFIGS TAB                                                  */}
+      {/* ------------------------------------------------------------------ */}
+      {activeTab === "restore" && (
+        <>
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <p className="text-sm text-muted-foreground">
+              Periodically restore the latest successful backup to a target database for DR checks or restore testing.
+            </p>
+            <div className="flex items-center gap-2">
+              <ViewToggle />
+              <Button
+                onClick={() => {
+                  const sourceConfigId = restoreForm.source_config || configs[0]?.id || 0;
+                  const targetOptions = availableRestoreTargets(sourceConfigId);
+                  setRestoreTab("targets");
+                  setRestoreForm((p) => ({
+                    ...p,
+                    source_config: sourceConfigId,
+                    target_database: targetOptions.some((db) => db.id === p.target_database)
+                      ? p.target_database
+                      : (targetOptions[0]?.id || 0),
+                  }));
+                  setOpenRestore(true);
+                }}
+                disabled={configs.length === 0 || databases.length === 0}
+              >
+                <Plus className="mr-2 h-4 w-4" />Add Restore Config
+              </Button>
+            </div>
+          </div>
+          {(configs.length === 0 || databases.length === 0) && (
+            <p className="mb-4 text-sm text-muted-foreground">
+              You need at least one backup config and one database before creating a restore config.
+            </p>
+          )}
+
+          {viewMode === "card" ? (
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+              {restoreConfigs.map((restoreConfig, i) => {
+                const srcCfg = configById.get(restoreConfig.source_config);
+                const sourceDb = srcCfg ? dbById.get(srcCfg.database) : undefined;
+                const targetDb = dbById.get(restoreConfig.target_database);
+                const dayNames = restoreConfig.restore_days_of_week && restoreConfig.restore_days_of_week.length > 0
+                  ? restoreConfig.restore_days_of_week.map((d) => DAYS_OF_WEEK[d].short).join(", ")
+                  : "Every day";
+                return (
+                  <motion.div key={restoreConfig.id} initial={fadeUp.initial} animate={fadeUp.animate}
+                    transition={reduceMotion ? { duration: 0 } : { ...defaultTransition, delay: i * 0.07 }}>
+                    <Card className="group relative overflow-hidden hover:-translate-y-1 hover:shadow-hover transition-transform duration-200">
+                      <div className="bg-gradient-accent absolute inset-x-0 top-0 h-1 opacity-70" />
+                      <div className="flex items-start justify-between">
+                        <div className="flex-1 min-w-0">
+                          <p className="font-semibold text-foreground">
+                            {sourceDb ? dbDisplayName(sourceDb) : `Config ${restoreConfig.source_config}`}
+                            <span className="mx-2 text-muted-foreground">→</span>
+                            {targetDb ? dbDisplayName(targetDb) : `Database ${restoreConfig.target_database}`}
+                          </p>
+                          <p className="mt-1 text-sm text-muted-foreground">
+                            {restoreConfig.restore_frequency_minutes === 0
+                              ? "Interval disabled"
+                              : `Every ${minutesToDisplay(restoreConfig.restore_frequency_minutes)}`}
+                          </p>
+                          <p className="mt-1 text-xs text-muted-foreground">{dayNames}</p>
+                          <p className="mt-1 text-xs text-muted-foreground">
+                            {restoreConfig.drop_target_on_success ? "Drop target after success" : "Keep restored target"}
+                          </p>
+                          <p className="mt-1 text-xs text-muted-foreground">
+                            Last run: {restoreConfig.last_restored_at ? new Date(restoreConfig.last_restored_at).toLocaleString() : "Never"}
+                          </p>
+                        </div>
+                        <div className="ml-2 flex shrink-0 flex-col items-end gap-1.5">
+                          <Button type="button" variant="blue" className={ACTION_BTN}
+                            onClick={() => openEditRestoreConfig(restoreConfig)}>
+                            <Pencil className="mr-1 h-3.5 w-3.5" />Edit
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="secondary"
+                            className={ACTION_BTN}
+                            onClick={() => void toggleRestoreConfigEnabled(restoreConfig)}
+                          >
+                            {restoreConfig.enabled ? "Disable" : "Enable"}
+                          </Button>
+                          <Button type="button" variant="danger" className={ACTION_BTN}
+                            onClick={() => void deleteRestoreConfig(accessToken!, restoreConfig.id).then(loadData)}>
+                            <Trash2 className="mr-1 h-3.5 w-3.5" />Remove
+                          </Button>
+                        </div>
+                      </div>
+                    </Card>
+                  </motion.div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="rounded-2xl border border-border overflow-hidden">
+              <table className="w-full text-sm">
+                <thead className="bg-surface text-left text-xs text-muted-foreground">
+                  <tr>
+                    <th className="px-4 py-2 font-medium">Source</th>
+                    <th className="px-4 py-2 font-medium">Target</th>
+                    <th className="px-4 py-2 font-medium">Frequency</th>
+                    <th className="px-4 py-2 font-medium">Schedule Days</th>
+                    <th className="px-4 py-2 font-medium">Behavior</th>
+                    <th className="px-4 py-2 font-medium">Last Run</th>
+                    <th className="px-4 py-2 font-medium">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border bg-white">
+                  {restoreConfigs.map((restoreConfig) => {
+                    const srcCfg = configById.get(restoreConfig.source_config);
+                    const sourceDb = srcCfg ? dbById.get(srcCfg.database) : undefined;
+                    const targetDb = dbById.get(restoreConfig.target_database);
+                    const dayNames = restoreConfig.restore_days_of_week && restoreConfig.restore_days_of_week.length > 0
+                      ? restoreConfig.restore_days_of_week.map((d) => DAYS_OF_WEEK[d].short).join(", ")
+                      : "Every day";
+                    return (
+                      <tr key={restoreConfig.id} className="hover:bg-surface/50 transition-colors">
+                        <td className="px-4 py-2 font-medium text-foreground">{sourceDb ? dbDisplayName(sourceDb) : `Config ${restoreConfig.source_config}`}</td>
+                        <td className="px-4 py-2 text-muted-foreground">{targetDb ? dbDisplayName(targetDb) : `Database ${restoreConfig.target_database}`}</td>
+                        <td className="px-4 py-2 text-muted-foreground">{minutesToDisplay(restoreConfig.restore_frequency_minutes)}</td>
+                        <td className="px-4 py-2 text-muted-foreground">{dayNames}</td>
+                        <td className="px-4 py-2 text-muted-foreground">{restoreConfig.drop_target_on_success ? "Drop on success" : "Keep"}</td>
+                        <td className="px-4 py-2 text-muted-foreground text-xs">
+                          {restoreConfig.last_restored_at ? new Date(restoreConfig.last_restored_at).toLocaleString() : "Never"}
+                        </td>
+                        <td className="px-4 py-2">
+                          <div className="flex items-center gap-1.5">
+                            <Button type="button" variant="blue" className={ACTION_BTN}
+                              onClick={() => openEditRestoreConfig(restoreConfig)}>
+                              <Pencil className="mr-1 h-3.5 w-3.5" />Edit
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="secondary"
+                              className={ACTION_BTN}
+                              onClick={() => void toggleRestoreConfigEnabled(restoreConfig)}
+                            >
+                              {restoreConfig.enabled ? "Disable" : "Enable"}
+                            </Button>
+                            <Button type="button" variant="danger" className={ACTION_BTN}
+                              onClick={() => void deleteRestoreConfig(accessToken!, restoreConfig.id).then(loadData)}>
+                              <Trash2 className="mr-1 h-3.5 w-3.5" />Remove
+                            </Button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {!loading && restoreConfigs.length === 0 && (
+            <p className="text-sm text-muted-foreground">No restore configs yet.</p>
+          )}
+
+          <Modal open={openRestore} onClose={() => setOpenRestore(false)} title="Add Restore Config">
+            <form className="space-y-3" onSubmit={submitRestoreConfig}>
+              <p className="text-xs text-muted-foreground">
+                Restore the latest successful backup from a backup config into a target database on a schedule.
+              </p>
+              <div className="mb-2 flex gap-2 border-b border-border">
+                {[
+                  { id: "targets", label: "Targets" },
+                  { id: "schedule", label: "Schedule" },
+                  { id: "options", label: "Options" },
+                ].map((tab) => (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => setRestoreTab(tab.id as "targets" | "schedule" | "options")}
+                    className={`flex items-center gap-2 border-b-2 px-4 pb-3 pt-1 text-sm font-medium transition ${
+                      restoreTab === tab.id
+                        ? "border-accent text-foreground"
+                        : "border-transparent text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
+              {restoreTab === "targets" && (
+                <div className="space-y-3">
+                  <div>
+                    <label className="mb-1 block text-xs text-muted-foreground">Source Backup Config</label>
+                    <select
+                      className="h-12 w-full rounded-xl border border-border bg-white px-4 text-sm shadow-soft"
+                      value={restoreForm.source_config || ""}
+                      onChange={(e) => {
+                        const nextSourceId = Number(e.target.value);
+                        const targets = availableRestoreTargets(nextSourceId);
+                        setRestoreForm((p) => ({
+                          ...p,
+                          source_config: nextSourceId,
+                          target_database: targets.some((db) => db.id === p.target_database)
+                            ? p.target_database
+                            : (targets[0]?.id || 0),
+                        }));
+                      }}
+                      required
+                    >
+                      <option value="" disabled>Select backup config…</option>
+                      {configs.map((cfg) => {
+                        const db = dbById.get(cfg.database);
+                        return <option key={cfg.id} value={cfg.id}>{db ? dbDisplayName(db) : `Config ${cfg.id}`}</option>;
+                      })}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs text-muted-foreground">Target Database</label>
+                    <select
+                      className="h-12 w-full rounded-xl border border-border bg-white px-4 text-sm shadow-soft"
+                      value={restoreForm.target_database || ""}
+                      onChange={(e) => setRestoreForm((p) => ({ ...p, target_database: Number(e.target.value) }))}
+                      required
+                    >
+                      <option value="" disabled>Select target database…</option>
+                      {availableRestoreTargets(restoreForm.source_config).map((db) => (
+                        <option key={db.id} value={db.id}>{dbDisplayName(db)} ({dbTypeLabel[db.db_type]})</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              )}
+              {restoreTab === "schedule" && (
+                <div className="space-y-3">
+                  <div>
+                    <label className="mb-1 block text-xs text-muted-foreground">Restore frequency</label>
+                    <div className="flex gap-2">
+                      <Input type="number" placeholder="e.g. 1" className="flex-1"
+                        value={restoreForm.frequencyValue}
+                        onChange={(e) => setRestoreForm((p) => ({ ...p, frequencyValue: Number(e.target.value) }))}
+                        min={0} required />
+                      <select
+                        className="h-12 rounded-xl border border-border bg-white px-3 text-sm shadow-soft"
+                        value={restoreForm.frequencyUnit}
+                        onChange={(e) => setRestoreForm((p) => ({ ...p, frequencyUnit: e.target.value as FreqUnit }))}
+                      >
+                        <option value="minutes">Minutes</option>
+                        <option value="hours">Hours</option>
+                        <option value="days">Days</option>
+                      </select>
+                    </div>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      = {minutesToDisplay(freqToMinutes(restoreForm.frequencyValue, restoreForm.frequencyUnit))}
+                    </p>
+                  </div>
+                  <div>
+                    <label className="mb-2 block text-xs text-muted-foreground">Run on (empty = every day)</label>
+                    <div className="flex flex-wrap gap-1.5">
+                      {DAYS_OF_WEEK.map((day) => {
+                        const active = restoreForm.restore_days_of_week.includes(day.value);
+                        return (
+                          <button
+                            key={day.value}
+                            type="button"
+                            onClick={() => setRestoreForm((p) => ({
+                              ...p,
+                              restore_days_of_week: active
+                                ? p.restore_days_of_week.filter((d) => d !== day.value)
+                                : [...p.restore_days_of_week, day.value],
+                            }))}
+                            className={cn(
+                              "rounded-lg border px-2.5 py-1 text-xs font-medium transition-colors",
+                              active
+                                ? "border-accent bg-accent/10 text-accent"
+                                : "border-border bg-white text-muted-foreground hover:border-accent/50"
+                            )}
+                          >
+                            {day.short}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              )}
+              {restoreTab === "options" && (
+                <div className="space-y-3 rounded-xl border border-border p-3">
+                  <label className="flex items-center gap-2 text-xs font-medium text-foreground cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={restoreForm.drop_target_on_success}
+                      onChange={(e) => setRestoreForm((p) => ({ ...p, drop_target_on_success: e.target.checked }))}
+                      className="rounded"
+                    />
+                    Drop target database/file after successful restore (testing mode)
+                  </label>
+                </div>
+              )}
+              <div className="flex justify-end gap-3 pt-2">
+                <Button variant="secondary" type="button" onClick={() => setOpenRestore(false)}>Cancel</Button>
+                <Button type="submit">Create</Button>
+              </div>
+            </form>
+          </Modal>
+
+          <Modal open={editingRestoreConfig !== null} onClose={() => setEditingRestoreConfig(null)} title="Edit Restore Config">
+            <form className="space-y-3" onSubmit={submitEditRestoreConfig}>
+              <p className="text-xs text-muted-foreground">
+                Update target, schedule, and behavior for this restore configuration.
+              </p>
+              <div>
+                <label className="mb-1 block text-xs text-muted-foreground">Source Backup Config</label>
+                <select
+                  className="h-12 w-full rounded-xl border border-border bg-white px-4 text-sm shadow-soft"
+                  value={editRestoreForm.source_config || ""}
+                  onChange={(e) => {
+                    const nextSourceId = Number(e.target.value);
+                    const targets = availableRestoreTargets(nextSourceId);
+                    setEditRestoreForm((p) => ({
+                      ...p,
+                      source_config: nextSourceId,
+                      target_database: targets.some((db) => db.id === p.target_database)
+                        ? p.target_database
+                        : (targets[0]?.id || 0),
+                    }));
+                  }}
+                  required
+                >
+                  <option value="" disabled>Select backup config…</option>
+                  {configs.map((cfg) => {
+                    const db = dbById.get(cfg.database);
+                    return <option key={cfg.id} value={cfg.id}>{db ? dbDisplayName(db) : `Config ${cfg.id}`}</option>;
+                  })}
+                </select>
+              </div>
+              <div>
+                <label className="mb-1 block text-xs text-muted-foreground">Target Database</label>
+                <select
+                  className="h-12 w-full rounded-xl border border-border bg-white px-4 text-sm shadow-soft"
+                  value={editRestoreForm.target_database || ""}
+                  onChange={(e) => setEditRestoreForm((p) => ({ ...p, target_database: Number(e.target.value) }))}
+                  required
+                >
+                  <option value="" disabled>Select target database…</option>
+                  {availableRestoreTargets(editRestoreForm.source_config).map((db) => (
+                    <option key={db.id} value={db.id}>{dbDisplayName(db)} ({dbTypeLabel[db.db_type]})</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="mb-1 block text-xs text-muted-foreground">Restore frequency</label>
+                <div className="flex gap-2">
+                  <Input
+                    type="number"
+                    placeholder="e.g. 1"
+                    className="flex-1"
+                    value={editRestoreForm.frequencyValue}
+                    onChange={(e) => setEditRestoreForm((p) => ({ ...p, frequencyValue: Number(e.target.value) }))}
+                    min={0}
+                    required
+                  />
+                  <select
+                    className="h-12 rounded-xl border border-border bg-white px-3 text-sm shadow-soft"
+                    value={editRestoreForm.frequencyUnit}
+                    onChange={(e) => setEditRestoreForm((p) => ({ ...p, frequencyUnit: e.target.value as FreqUnit }))}
+                  >
+                    <option value="minutes">Minutes</option>
+                    <option value="hours">Hours</option>
+                    <option value="days">Days</option>
+                  </select>
+                </div>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  = {minutesToDisplay(freqToMinutes(editRestoreForm.frequencyValue, editRestoreForm.frequencyUnit))}
+                </p>
+              </div>
+              <div>
+                <label className="mb-2 block text-xs text-muted-foreground">Run on (empty = every day)</label>
+                <div className="flex flex-wrap gap-1.5">
+                  {DAYS_OF_WEEK.map((day) => {
+                    const active = editRestoreForm.restore_days_of_week.includes(day.value);
+                    return (
+                      <button
+                        key={day.value}
+                        type="button"
+                        onClick={() => setEditRestoreForm((p) => ({
+                          ...p,
+                          restore_days_of_week: active
+                            ? p.restore_days_of_week.filter((d) => d !== day.value)
+                            : [...p.restore_days_of_week, day.value],
+                        }))}
+                        className={cn(
+                          "rounded-lg border px-2.5 py-1 text-xs font-medium transition-colors",
+                          active
+                            ? "border-accent bg-accent/10 text-accent"
+                            : "border-border bg-white text-muted-foreground hover:border-accent/50"
+                        )}
+                      >
+                        {day.short}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+              <div className="space-y-2 rounded-xl border border-border p-3">
+                <label className="flex items-center gap-2 text-xs font-medium text-foreground cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={editRestoreForm.drop_target_on_success}
+                    onChange={(e) => setEditRestoreForm((p) => ({ ...p, drop_target_on_success: e.target.checked }))}
+                    className="rounded"
+                  />
+                  Drop target database/file after successful restore (testing mode)
+                </label>
+                <label className="flex items-center gap-2 text-xs font-medium text-foreground cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={editRestoreForm.enabled}
+                    onChange={(e) => setEditRestoreForm((p) => ({ ...p, enabled: e.target.checked }))}
+                    className="rounded"
+                  />
+                  Enabled
+                </label>
+              </div>
+              <div className="flex justify-end gap-3 pt-2">
+                <Button variant="secondary" type="button" onClick={() => setEditingRestoreConfig(null)}>Cancel</Button>
+                <Button type="submit">Save</Button>
               </div>
             </form>
           </Modal>

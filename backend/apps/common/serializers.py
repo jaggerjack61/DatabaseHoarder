@@ -23,4 +23,5 @@ class SiteSettingsSerializer(serializers.ModelSerializer):
             "backup_execution_mode",
             "connection_check_interval_seconds",
             "default_replication_path",
+            "max_task_retries",
         )

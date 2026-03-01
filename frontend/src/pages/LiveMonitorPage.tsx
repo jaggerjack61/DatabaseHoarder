@@ -312,6 +312,8 @@ export function LiveMonitorPage() {
                 <tr className="border-b border-border text-left text-xs uppercase tracking-wider text-muted-foreground">
                   <th className="px-4 py-3">Restore #</th>
                   <th className="px-4 py-3">Backup #</th>
+                  <th className="px-4 py-3">Source Config</th>
+                  <th className="px-4 py-3">Source DB</th>
                   <th className="px-4 py-3">Target DB</th>
                   <th className="px-4 py-3">Status</th>
                   <th className="px-4 py-3">Triggered By</th>
@@ -324,6 +326,10 @@ export function LiveMonitorPage() {
                   <tr key={job.id} className="border-b border-border/70 hover:bg-muted/60">
                     <td className="px-4 py-3">#{job.id}</td>
                     <td className="px-4 py-3">#{job.backup}</td>
+                    <td className="px-4 py-3 text-xs text-muted-foreground">#{job.backup_database_config}</td>
+                    <td className="px-4 py-3 text-xs text-muted-foreground">
+                      {job.backup_database_name || job.backup_database_fallback_name || "—"}
+                    </td>
                     <td className="px-4 py-3 text-xs text-muted-foreground">{job.target_db}</td>
                     <td className="px-4 py-3"><StatusBadge status={job.status} /></td>
                     <td className="px-4 py-3 text-xs text-muted-foreground">{job.triggered_by ?? "—"}</td>

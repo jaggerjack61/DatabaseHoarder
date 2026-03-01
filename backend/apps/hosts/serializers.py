@@ -1,7 +1,7 @@
 from rest_framework import serializers
 
 from .access import accessible_configs_for_user, accessible_databases_for_user, accessible_storage_hosts_for_user
-from .models import Database, DatabaseConfig, DatabaseType, ReplicationPolicy, SqliteLocation, StorageHost
+from .models import Database, DatabaseConfig, DatabaseType, ReplicationPolicy, RestoreConfig, SqliteLocation, StorageHost
 
 
 class StorageHostSerializer(serializers.ModelSerializer):
@@ -193,4 +193,57 @@ class ReplicationPolicySerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError("Cannot create policy for a database config you cannot access.")
             if not accessible_storage_hosts_for_user(user).filter(id=storage_host.id).exists():
                 raise serializers.ValidationError("Cannot replicate to a storage host you cannot access.")
+        return attrs
+
+
+class RestoreConfigSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = RestoreConfig
+        fields = (
+            "id",
+            "source_config",
+            "target_database",
+            "restore_frequency_minutes",
+            "restore_days_of_week",
+            "drop_target_on_success",
+            "last_restored_at",
+            "enabled",
+            "created_at",
+        )
+        read_only_fields = ("id", "last_restored_at", "created_at")
+
+    def validate(self, attrs):
+        user = self.context["request"].user
+        restore_frequency = attrs.get(
+            "restore_frequency_minutes",
+            self.instance.restore_frequency_minutes if self.instance else None,
+        )
+        restore_days = attrs.get(
+            "restore_days_of_week",
+            self.instance.restore_days_of_week if self.instance else [],
+        )
+        if restore_frequency == 0 and not restore_days:
+            raise serializers.ValidationError(
+                "restore_frequency_minutes must be greater than 0 when no restore_days_of_week are selected."
+            )
+
+        source_config = attrs.get("source_config") or (self.instance.source_config if self.instance else None)
+        target_database = attrs.get("target_database") or (self.instance.target_database if self.instance else None)
+
+        if source_config and target_database and source_config.database.db_type != target_database.db_type:
+            raise serializers.ValidationError("Source config and target database must use the same database type.")
+
+        drop_target = attrs.get(
+            "drop_target_on_success",
+            self.instance.drop_target_on_success if self.instance else False,
+        )
+        if drop_target and source_config and target_database and source_config.database_id == target_database.id:
+            raise serializers.ValidationError("Cannot drop target when source and target database are the same.")
+
+        if not user.is_admin and source_config and target_database:
+            if not accessible_configs_for_user(user).filter(id=source_config.id).exists():
+                raise serializers.ValidationError("Cannot create restore config for a source config you cannot access.")
+            if not accessible_databases_for_user(user).filter(id=target_database.id).exists():
+                raise serializers.ValidationError("Cannot target a database you cannot access.")
+
         return attrs

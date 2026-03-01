@@ -113,11 +113,18 @@ class ReviewDeletionRequestSerializer(serializers.Serializer):
 
 
 class RestoreJobSerializer(serializers.ModelSerializer):
+    backup_database_config = serializers.IntegerField(source="backup.database_config_id", read_only=True)
+    backup_database_name = serializers.CharField(source="backup.database_config.database.alias", read_only=True)
+    backup_database_fallback_name = serializers.CharField(source="backup.database_config.database.name", read_only=True)
+
     class Meta:
         model = RestoreJob
         fields = (
             "id",
             "backup",
+            "backup_database_config",
+            "backup_database_name",
+            "backup_database_fallback_name",
             "target_db",
             "triggered_by",
             "status",

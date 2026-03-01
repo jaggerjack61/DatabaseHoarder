@@ -9,6 +9,7 @@ import {
   LiveBackupsResponse,
   LiveRestorationsResponse,
   ReplicationPolicy,
+  RestoreConfig,
   SiteSettings,
   StorageHost,
   TriggerBackupResponse,
@@ -291,6 +292,36 @@ export function deleteReplicationPolicy(accessToken: string, id: number) {
 
 export function updateReplicationPolicy(accessToken: string, id: number, payload: Partial<ReplicationPolicy>) {
   return request<ReplicationPolicy>(`/api/hosts/replication-policies/${id}/`, { method: "PATCH", body: JSON.stringify(payload) }, accessToken);
+}
+
+// ---------------------------------------------------------------------------
+// Restore Configs
+// ---------------------------------------------------------------------------
+
+export function getRestoreConfigs(accessToken: string) {
+  return request<RestoreConfig[]>("/api/hosts/restore-configs/", { method: "GET" }, accessToken);
+}
+
+export function createRestoreConfig(
+  accessToken: string,
+  payload: {
+    source_config: number;
+    target_database: number;
+    restore_frequency_minutes: number;
+    restore_days_of_week?: number[];
+    drop_target_on_success?: boolean;
+    enabled: boolean;
+  },
+) {
+  return request<RestoreConfig>("/api/hosts/restore-configs/", { method: "POST", body: JSON.stringify(payload) }, accessToken);
+}
+
+export function updateRestoreConfig(accessToken: string, id: number, payload: Partial<RestoreConfig>) {
+  return request<RestoreConfig>(`/api/hosts/restore-configs/${id}/`, { method: "PATCH", body: JSON.stringify(payload) }, accessToken);
+}
+
+export function deleteRestoreConfig(accessToken: string, id: number) {
+  return request<null>(`/api/hosts/restore-configs/${id}/`, { method: "DELETE" }, accessToken);
 }
 
 // ---------------------------------------------------------------------------

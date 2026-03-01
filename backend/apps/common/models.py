@@ -41,6 +41,10 @@ class SiteSettings(models.Model):
         default="/var/www/backups",
         help_text="Default base path for replication targets.",
     )
+    max_task_retries = models.PositiveIntegerField(
+        default=3,
+        help_text="Maximum number of retry attempts for failed tasks before marking as failed.",
+    )
     last_connection_check_at = models.DateTimeField(null=True, blank=True)
     last_connection_check_payload = models.JSONField(default=dict, blank=True)
 
