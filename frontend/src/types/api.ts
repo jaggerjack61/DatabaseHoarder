@@ -116,6 +116,7 @@ export interface DatabaseConfig {
   last_backup_at: string | null;
   enabled: boolean;
   created_at: string;
+  updated_at?: string;
 }
 
 /**
@@ -140,6 +141,7 @@ export interface ReplicationPolicy {
   /** null = no max duration for retention exceptions */
   replication_retention_exception_max_days: number | null;
   created_at: string;
+  updated_at?: string;
 }
 
 /** Periodic restore of latest successful backup from a source config to a target database. */
@@ -154,6 +156,55 @@ export interface RestoreConfig {
   drop_target_on_success: boolean;
   last_restored_at: string | null;
   enabled: boolean;
+  created_at: string;
+  updated_at?: string;
+}
+
+export interface DatabaseConfigVersion {
+  id: number;
+  database_config: number;
+  database: number;
+  backup_frequency_minutes: number;
+  retention_days: number;
+  backup_days_of_week: number[];
+  retention_keep_monthly_first: boolean;
+  retention_keep_weekly_day: number | null;
+  retention_exception_days: number | null;
+  retention_exception_max_days: number | null;
+  enabled: boolean;
+  effective_from: string;
+  effective_to: string | null;
+  created_at: string;
+}
+
+export interface ReplicationPolicyVersion {
+  id: number;
+  replication_policy: number;
+  database_config: number;
+  storage_host: number;
+  remote_path: string;
+  enabled: boolean;
+  replication_frequency_minutes: number | null;
+  replication_days_of_week: number[];
+  replication_retention_days: number | null;
+  replication_retention_exception_days: number | null;
+  replication_retention_exception_max_days: number | null;
+  effective_from: string;
+  effective_to: string | null;
+  created_at: string;
+}
+
+export interface RestoreConfigVersion {
+  id: number;
+  restore_config: number;
+  source_config: number;
+  target_database: number;
+  restore_frequency_minutes: number;
+  restore_days_of_week: number[];
+  drop_target_on_success: boolean;
+  enabled: boolean;
+  effective_from: string;
+  effective_to: string | null;
   created_at: string;
 }
 

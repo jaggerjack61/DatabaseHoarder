@@ -10,12 +10,24 @@ from apps.common.crypto import decrypt_text
 from apps.common.models import SiteSettings
 
 from .access import accessible_configs_for_user, accessible_databases_for_user, accessible_storage_hosts_for_user
-from .models import Database, DatabaseConfig, ReplicationPolicy, RestoreConfig, StorageHost
+from .models import (
+    Database,
+    DatabaseConfig,
+    DatabaseConfigVersion,
+    ReplicationPolicy,
+    ReplicationPolicyVersion,
+    RestoreConfig,
+    RestoreConfigVersion,
+    StorageHost,
+)
 from .serializers import (
     DatabaseConfigSerializer,
+    DatabaseConfigVersionSerializer,
     DatabaseSerializer,
     ReplicationPolicySerializer,
+    ReplicationPolicyVersionSerializer,
     RestoreConfigSerializer,
+    RestoreConfigVersionSerializer,
     StorageHostSerializer,
 )
 
@@ -443,6 +455,50 @@ class RestoreConfigViewSet(OwnerFilteredQuerysetMixin, viewsets.ModelViewSet):
     serializer_class = RestoreConfigSerializer
     permission_classes = (IsAuthenticated,)
     owner_lookup = "source_config__database__owner"
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        user = self.request.user
+        if user.is_admin:
+            return queryset
+        accessible_config_ids = accessible_configs_for_user(user).values_list("id", flat=True)
+        accessible_database_ids = accessible_databases_for_user(user).values_list("id", flat=True)
+        return queryset.filter(source_config_id__in=accessible_config_ids, target_database_id__in=accessible_database_ids)
+
+
+class DatabaseConfigVersionViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = DatabaseConfigVersion.objects.select_related("database_config__database", "database").all()
+    serializer_class = DatabaseConfigVersionSerializer
+    permission_classes = (IsAuthenticated,)
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        user = self.request.user
+        if user.is_admin:
+            return queryset
+        accessible_config_ids = accessible_configs_for_user(user).values_list("id", flat=True)
+        return queryset.filter(database_config_id__in=accessible_config_ids)
+
+
+class ReplicationPolicyVersionViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = ReplicationPolicyVersion.objects.select_related("database_config__database", "storage_host").all()
+    serializer_class = ReplicationPolicyVersionSerializer
+    permission_classes = (IsAuthenticated,)
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        user = self.request.user
+        if user.is_admin:
+            return queryset
+        accessible_config_ids = accessible_configs_for_user(user).values_list("id", flat=True)
+        accessible_host_ids = accessible_storage_hosts_for_user(user).values_list("id", flat=True)
+        return queryset.filter(database_config_id__in=accessible_config_ids, storage_host_id__in=accessible_host_ids)
+
+
+class RestoreConfigVersionViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = RestoreConfigVersion.objects.select_related("source_config__database", "target_database").all()
+    serializer_class = RestoreConfigVersionSerializer
+    permission_classes = (IsAuthenticated,)
 
     def get_queryset(self):
         queryset = super().get_queryset()

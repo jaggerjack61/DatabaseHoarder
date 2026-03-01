@@ -1,7 +1,19 @@
 from rest_framework import serializers
+from django.utils import timezone
 
 from .access import accessible_configs_for_user, accessible_databases_for_user, accessible_storage_hosts_for_user
-from .models import Database, DatabaseConfig, DatabaseType, ReplicationPolicy, RestoreConfig, SqliteLocation, StorageHost
+from .models import (
+    Database,
+    DatabaseConfig,
+    DatabaseConfigVersion,
+    DatabaseType,
+    ReplicationPolicy,
+    ReplicationPolicyVersion,
+    RestoreConfig,
+    RestoreConfigVersion,
+    SqliteLocation,
+    StorageHost,
+)
 
 
 class StorageHostSerializer(serializers.ModelSerializer):
@@ -134,8 +146,9 @@ class DatabaseConfigSerializer(serializers.ModelSerializer):
             "last_backup_at",
             "enabled",
             "created_at",
+            "updated_at",
         )
-        read_only_fields = ("id", "last_backup_at", "created_at")
+        read_only_fields = ("id", "last_backup_at", "created_at", "updated_at")
 
     def validate(self, attrs):
         backup_frequency = attrs.get("backup_frequency_minutes")
@@ -151,6 +164,46 @@ class DatabaseConfigSerializer(serializers.ModelSerializer):
         if not user.is_admin and not accessible_databases_for_user(user).filter(id=value.id).exists():
             raise serializers.ValidationError("Cannot create config for a database you cannot access.")
         return value
+
+    def _roll_version(self, instance: DatabaseConfig):
+        now = timezone.now()
+        DatabaseConfigVersion.objects.filter(database_config=instance, effective_to__isnull=True).update(effective_to=now)
+        DatabaseConfigVersion.objects.create(
+            database_config=instance,
+            database=instance.database,
+            backup_frequency_minutes=instance.backup_frequency_minutes,
+            retention_days=instance.retention_days,
+            backup_days_of_week=instance.backup_days_of_week,
+            retention_keep_monthly_first=instance.retention_keep_monthly_first,
+            retention_keep_weekly_day=instance.retention_keep_weekly_day,
+            retention_exception_days=instance.retention_exception_days,
+            retention_exception_max_days=instance.retention_exception_max_days,
+            enabled=instance.enabled,
+            effective_from=now,
+        )
+
+    def create(self, validated_data):
+        instance = super().create(validated_data)
+        self._roll_version(instance)
+        return instance
+
+    def update(self, instance, validated_data):
+        tracked_fields = {
+            "database",
+            "backup_frequency_minutes",
+            "retention_days",
+            "backup_days_of_week",
+            "retention_keep_monthly_first",
+            "retention_keep_weekly_day",
+            "retention_exception_days",
+            "retention_exception_max_days",
+            "enabled",
+        }
+        should_roll = any(field in validated_data for field in tracked_fields)
+        instance = super().update(instance, validated_data)
+        if should_roll:
+            self._roll_version(instance)
+        return instance
 
 
 class ReplicationPolicySerializer(serializers.ModelSerializer):
@@ -169,8 +222,9 @@ class ReplicationPolicySerializer(serializers.ModelSerializer):
             "replication_retention_exception_days",
             "replication_retention_exception_max_days",
             "created_at",
+            "updated_at",
         )
-        read_only_fields = ("id", "last_replicated_at", "created_at")
+        read_only_fields = ("id", "last_replicated_at", "created_at", "updated_at")
 
     def validate(self, attrs):
         user = self.context["request"].user
@@ -195,6 +249,46 @@ class ReplicationPolicySerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError("Cannot replicate to a storage host you cannot access.")
         return attrs
 
+    def _roll_version(self, instance: ReplicationPolicy):
+        now = timezone.now()
+        ReplicationPolicyVersion.objects.filter(replication_policy=instance, effective_to__isnull=True).update(effective_to=now)
+        ReplicationPolicyVersion.objects.create(
+            replication_policy=instance,
+            database_config=instance.database_config,
+            storage_host=instance.storage_host,
+            remote_path=instance.remote_path,
+            enabled=instance.enabled,
+            replication_frequency_minutes=instance.replication_frequency_minutes,
+            replication_days_of_week=instance.replication_days_of_week,
+            replication_retention_days=instance.replication_retention_days,
+            replication_retention_exception_days=instance.replication_retention_exception_days,
+            replication_retention_exception_max_days=instance.replication_retention_exception_max_days,
+            effective_from=now,
+        )
+
+    def create(self, validated_data):
+        instance = super().create(validated_data)
+        self._roll_version(instance)
+        return instance
+
+    def update(self, instance, validated_data):
+        tracked_fields = {
+            "database_config",
+            "storage_host",
+            "remote_path",
+            "enabled",
+            "replication_frequency_minutes",
+            "replication_days_of_week",
+            "replication_retention_days",
+            "replication_retention_exception_days",
+            "replication_retention_exception_max_days",
+        }
+        should_roll = any(field in validated_data for field in tracked_fields)
+        instance = super().update(instance, validated_data)
+        if should_roll:
+            self._roll_version(instance)
+        return instance
+
 
 class RestoreConfigSerializer(serializers.ModelSerializer):
     class Meta:
@@ -209,8 +303,9 @@ class RestoreConfigSerializer(serializers.ModelSerializer):
             "last_restored_at",
             "enabled",
             "created_at",
+            "updated_at",
         )
-        read_only_fields = ("id", "last_restored_at", "created_at")
+        read_only_fields = ("id", "last_restored_at", "created_at", "updated_at")
 
     def validate(self, attrs):
         user = self.context["request"].user
@@ -247,3 +342,100 @@ class RestoreConfigSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError("Cannot target a database you cannot access.")
 
         return attrs
+
+    def _roll_version(self, instance: RestoreConfig):
+        now = timezone.now()
+        RestoreConfigVersion.objects.filter(restore_config=instance, effective_to__isnull=True).update(effective_to=now)
+        RestoreConfigVersion.objects.create(
+            restore_config=instance,
+            source_config=instance.source_config,
+            target_database=instance.target_database,
+            restore_frequency_minutes=instance.restore_frequency_minutes,
+            restore_days_of_week=instance.restore_days_of_week,
+            drop_target_on_success=instance.drop_target_on_success,
+            enabled=instance.enabled,
+            effective_from=now,
+        )
+
+    def create(self, validated_data):
+        instance = super().create(validated_data)
+        self._roll_version(instance)
+        return instance
+
+    def update(self, instance, validated_data):
+        tracked_fields = {
+            "source_config",
+            "target_database",
+            "restore_frequency_minutes",
+            "restore_days_of_week",
+            "drop_target_on_success",
+            "enabled",
+        }
+        should_roll = any(field in validated_data for field in tracked_fields)
+        instance = super().update(instance, validated_data)
+        if should_roll:
+            self._roll_version(instance)
+        return instance
+
+
+class DatabaseConfigVersionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = DatabaseConfigVersion
+        fields = (
+            "id",
+            "database_config",
+            "database",
+            "backup_frequency_minutes",
+            "retention_days",
+            "backup_days_of_week",
+            "retention_keep_monthly_first",
+            "retention_keep_weekly_day",
+            "retention_exception_days",
+            "retention_exception_max_days",
+            "enabled",
+            "effective_from",
+            "effective_to",
+            "created_at",
+        )
+        read_only_fields = fields
+
+
+class ReplicationPolicyVersionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ReplicationPolicyVersion
+        fields = (
+            "id",
+            "replication_policy",
+            "database_config",
+            "storage_host",
+            "remote_path",
+            "enabled",
+            "replication_frequency_minutes",
+            "replication_days_of_week",
+            "replication_retention_days",
+            "replication_retention_exception_days",
+            "replication_retention_exception_max_days",
+            "effective_from",
+            "effective_to",
+            "created_at",
+        )
+        read_only_fields = fields
+
+
+class RestoreConfigVersionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = RestoreConfigVersion
+        fields = (
+            "id",
+            "restore_config",
+            "source_config",
+            "target_database",
+            "restore_frequency_minutes",
+            "restore_days_of_week",
+            "drop_target_on_success",
+            "enabled",
+            "effective_from",
+            "effective_to",
+            "created_at",
+        )
+        read_only_fields = fields

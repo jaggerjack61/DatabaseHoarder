@@ -25,8 +25,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     clearTokens();
     setAccessToken(null);
     setUser(null);
-    if (location.pathname !== "/login") {
-      navigate("/login", { replace: true });
+    if (location.pathname !== "/") {
+      navigate("/", { replace: true });
     }
   }, [location.pathname, navigate]);
 

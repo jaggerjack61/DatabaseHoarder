@@ -1,5 +1,5 @@
 import { motion, useReducedMotion } from "framer-motion";
-import { Activity, Database, HardDrive, LayoutDashboard, Settings } from "lucide-react";
+import { Activity, CalendarDays, Database, HardDrive, LayoutDashboard, Settings } from "lucide-react";
 import { NavLink } from "react-router-dom";
 
 import { useAuth } from "@/context/AuthContext";
@@ -10,6 +10,7 @@ const navItems = [
   { to: "/dashboard", icon: LayoutDashboard, label: "Dashboard" },
   { to: "/hosts", icon: HardDrive, label: "Hosts" },
   { to: "/backups", icon: Database, label: "Backups" },
+  { to: "/planned-events", icon: CalendarDays, label: "Planned Events" },
   { to: "/monitor", icon: Activity, label: "Live Monitor" },
   { to: "/settings", icon: Settings, label: "Settings" },
 ];

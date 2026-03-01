@@ -198,6 +198,16 @@ class BackupViewSet(viewsets.ReadOnlyModelViewSet):
             }
         )
 
+    @action(detail=False, methods=["get"], url_path="restores")
+    def restores(self, request):
+        """Return restore jobs for planning/history views."""
+        user = request.user
+        qs = RestoreJob.objects.select_related("backup__database_config__database", "triggered_by").all()
+        if not user.is_admin:
+            qs = qs.filter(backup__database_config__database__owner=user)
+        serializer = RestoreJobSerializer(qs, many=True)
+        return Response(serializer.data)
+
     @action(detail=True, methods=["post"], throttle_classes=[RestoreThrottle])
     def restore(self, request, pk=None):
         """

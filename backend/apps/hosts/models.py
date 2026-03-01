@@ -111,6 +111,7 @@ class DatabaseConfig(models.Model):
     last_backup_at = models.DateTimeField(null=True, blank=True)
     enabled = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         ordering = ("-created_at",)
@@ -162,6 +163,7 @@ class ReplicationPolicy(models.Model):
         help_text="Stop replication retention exceptions after this many days.",
     )
     created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         ordering = ("-created_at",)
@@ -196,9 +198,70 @@ class RestoreConfig(models.Model):
     )
     enabled = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         ordering = ("-created_at",)
 
     def __str__(self):
         return f"Restore {self.source_config} → {self.target_database}"
+
+
+class DatabaseConfigVersion(models.Model):
+    """Historical snapshot for DatabaseConfig scheduling fields."""
+
+    database_config = models.ForeignKey(DatabaseConfig, on_delete=models.CASCADE, related_name="versions")
+    database = models.ForeignKey(Database, on_delete=models.CASCADE, related_name="database_config_versions")
+    backup_frequency_minutes = models.PositiveIntegerField(default=60)
+    retention_days = models.PositiveIntegerField(default=7)
+    backup_days_of_week = models.JSONField(default=list, blank=True)
+    retention_keep_monthly_first = models.BooleanField(default=False)
+    retention_keep_weekly_day = models.IntegerField(null=True, blank=True)
+    retention_exception_days = models.PositiveIntegerField(null=True, blank=True)
+    retention_exception_max_days = models.PositiveIntegerField(null=True, blank=True)
+    enabled = models.BooleanField(default=True)
+    effective_from = models.DateTimeField()
+    effective_to = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ("-effective_from", "-id")
+
+
+class ReplicationPolicyVersion(models.Model):
+    """Historical snapshot for ReplicationPolicy scheduling fields."""
+
+    replication_policy = models.ForeignKey(ReplicationPolicy, on_delete=models.CASCADE, related_name="versions")
+    database_config = models.ForeignKey(DatabaseConfig, on_delete=models.CASCADE, related_name="replication_policy_versions")
+    storage_host = models.ForeignKey(StorageHost, on_delete=models.CASCADE, related_name="replication_policy_versions")
+    remote_path = models.CharField(max_length=500, default="/backups")
+    enabled = models.BooleanField(default=True)
+    replication_frequency_minutes = models.PositiveIntegerField(null=True, blank=True)
+    replication_days_of_week = models.JSONField(default=list, blank=True)
+    replication_retention_days = models.PositiveIntegerField(null=True, blank=True)
+    replication_retention_exception_days = models.PositiveIntegerField(null=True, blank=True)
+    replication_retention_exception_max_days = models.PositiveIntegerField(null=True, blank=True)
+    effective_from = models.DateTimeField()
+    effective_to = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ("-effective_from", "-id")
+
+
+class RestoreConfigVersion(models.Model):
+    """Historical snapshot for RestoreConfig scheduling fields."""
+
+    restore_config = models.ForeignKey(RestoreConfig, on_delete=models.CASCADE, related_name="versions")
+    source_config = models.ForeignKey(DatabaseConfig, on_delete=models.CASCADE, related_name="restore_config_versions")
+    target_database = models.ForeignKey(Database, on_delete=models.CASCADE, related_name="restore_config_versions")
+    restore_frequency_minutes = models.PositiveIntegerField(default=1440)
+    restore_days_of_week = models.JSONField(default=list, blank=True)
+    drop_target_on_success = models.BooleanField(default=False)
+    enabled = models.BooleanField(default=True)
+    effective_from = models.DateTimeField()
+    effective_to = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ("-effective_from", "-id")

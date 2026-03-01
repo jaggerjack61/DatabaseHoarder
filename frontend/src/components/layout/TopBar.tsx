@@ -7,6 +7,7 @@ const titleMap: Record<string, string> = {
   "/dashboard": "Dashboard",
   "/hosts": "Database Hosts",
   "/backups": "Backups & Restore",
+  "/planned-events": "Planned Events",
 };
 
 export function TopBar() {

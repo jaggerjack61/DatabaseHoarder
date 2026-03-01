@@ -5,11 +5,15 @@ import {
   DashboardMetrics,
   Database,
   DatabaseConfig,
+  DatabaseConfigVersion,
   DatabaseType,
   LiveBackupsResponse,
   LiveRestorationsResponse,
   ReplicationPolicy,
+  ReplicationPolicyVersion,
   RestoreConfig,
+  RestoreConfigVersion,
+  RestoreJob,
   SiteSettings,
   StorageHost,
   TriggerBackupResponse,
@@ -261,6 +265,10 @@ export function deleteConfig(accessToken: string, id: number) {
   return request<null>(`/api/hosts/configs/${id}/`, { method: "DELETE" }, accessToken);
 }
 
+export function getConfigVersions(accessToken: string) {
+  return request<DatabaseConfigVersion[]>("/api/hosts/config-versions/", { method: "GET" }, accessToken);
+}
+
 // ---------------------------------------------------------------------------
 // Replication Policies
 // ---------------------------------------------------------------------------
@@ -294,6 +302,10 @@ export function updateReplicationPolicy(accessToken: string, id: number, payload
   return request<ReplicationPolicy>(`/api/hosts/replication-policies/${id}/`, { method: "PATCH", body: JSON.stringify(payload) }, accessToken);
 }
 
+export function getReplicationPolicyVersions(accessToken: string) {
+  return request<ReplicationPolicyVersion[]>("/api/hosts/replication-policy-versions/", { method: "GET" }, accessToken);
+}
+
 // ---------------------------------------------------------------------------
 // Restore Configs
 // ---------------------------------------------------------------------------
@@ -324,6 +336,10 @@ export function deleteRestoreConfig(accessToken: string, id: number) {
   return request<null>(`/api/hosts/restore-configs/${id}/`, { method: "DELETE" }, accessToken);
 }
 
+export function getRestoreConfigVersions(accessToken: string) {
+  return request<RestoreConfigVersion[]>("/api/hosts/restore-config-versions/", { method: "GET" }, accessToken);
+}
+
 // ---------------------------------------------------------------------------
 // Backups
 // ---------------------------------------------------------------------------
@@ -346,6 +362,10 @@ export function getLiveBackups(accessToken: string) {
 
 export function getLiveRestorations(accessToken: string) {
   return request<LiveRestorationsResponse>("/api/backups/live-restorations/", { method: "GET" }, accessToken);
+}
+
+export function getRestoreJobs(accessToken: string) {
+  return request<RestoreJob[]>("/api/backups/restores/", { method: "GET" }, accessToken);
 }
 
 export function restoreBackup(

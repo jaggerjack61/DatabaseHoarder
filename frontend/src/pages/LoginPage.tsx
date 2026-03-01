@@ -1,5 +1,5 @@
 import { FormEvent, useState } from "react";
-import { Navigate } from "react-router-dom";
+import { Link, Navigate } from "react-router-dom";
 
 import { useAuth } from "@/context/AuthContext";
 import { Button } from "@/components/ui/Button";
@@ -64,6 +64,13 @@ export function LoginPage() {
           <Button type="submit" fullWidth disabled={pending}>
             {pending ? "Signing in..." : "Sign In"}
           </Button>
+
+          <p className="text-center text-sm text-muted-foreground">
+            Need the overview first?{" "}
+            <Link to="/" className="font-medium text-accent hover:underline">
+              Go to landing page
+            </Link>
+          </p>
         </form>
       </Card>
     </main>

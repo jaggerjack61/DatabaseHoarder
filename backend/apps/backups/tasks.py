@@ -15,6 +15,31 @@ def _max_retries() -> int:
         return 3
 
 
+def _mark_backup_failed(backup_id: int | None, error_message: str):
+    if not backup_id:
+        return
+    from .models import Backup, BackupStatus
+
+    Backup.objects.filter(id=backup_id).update(
+        status=BackupStatus.FAILED,
+        completed_at=timezone.now(),
+        error_message=error_message,
+        metadata={"error": error_message},
+    )
+
+
+def _mark_replication_failed(backup_id: int, storage_host_id: int, error_message: str):
+    from .models import BackupReplication, ReplicationStatus
+
+    replication = BackupReplication.objects.filter(backup_id=backup_id, storage_host_id=storage_host_id).first()
+    if replication is None:
+        return
+    replication.status = ReplicationStatus.FAILED
+    replication.completed_at = timezone.now()
+    replication.error_message = error_message
+    replication.save(update_fields=["status", "completed_at", "error_message"])
+
+
 @shared_task(bind=True)
 def run_backup_task(self, config_id: int, backup_id: int | None = None):
     """Execute a backup for the given DatabaseConfig id."""
@@ -22,7 +47,11 @@ def run_backup_task(self, config_id: int, backup_id: int | None = None):
     try:
         execute_backup(config_id, backup_id=backup_id)
     except Exception as exc:
-        raise self.retry(exc=exc, max_retries=_max_retries(), countdown=30 * (self.request.retries + 1))
+        max_retries = _max_retries()
+        if self.request.retries >= max_retries:
+            _mark_backup_failed(backup_id, f"Max retries reached: {exc}")
+            raise
+        raise self.retry(exc=exc, max_retries=max_retries, countdown=30 * (self.request.retries + 1))
 
 
 @shared_task(bind=True)
@@ -32,7 +61,11 @@ def run_replication_task(self, backup_id: int, storage_host_id: int, remote_dir:
     try:
         execute_replication(backup_id, storage_host_id, remote_dir)
     except Exception as exc:
-        raise self.retry(exc=exc, max_retries=_max_retries(), countdown=30 * (self.request.retries + 1))
+        max_retries = _max_retries()
+        if self.request.retries >= max_retries:
+            _mark_replication_failed(backup_id, storage_host_id, f"Max retries reached: {exc}")
+            raise
+        raise self.retry(exc=exc, max_retries=max_retries, countdown=30 * (self.request.retries + 1))
 
 
 @shared_task(bind=True)
@@ -45,7 +78,10 @@ def run_restore_task(self, backup_id: int, target_db: str, user_id: int):
     try:
         execute_restore(backup_id, target_db, user)
     except Exception as exc:
-        raise self.retry(exc=exc, max_retries=_max_retries(), countdown=30 * (self.request.retries + 1))
+        max_retries = _max_retries()
+        if self.request.retries >= max_retries:
+            raise
+        raise self.retry(exc=exc, max_retries=max_retries, countdown=30 * (self.request.retries + 1))
 
 
 @shared_task(bind=True)
@@ -77,7 +113,10 @@ def run_restore_config_task(self, restore_config_id: int):
             drop_target_on_success=restore_config.drop_target_on_success,
         )
     except Exception as exc:
-        raise self.retry(exc=exc, max_retries=_max_retries(), countdown=30 * (self.request.retries + 1))
+        max_retries = _max_retries()
+        if self.request.retries >= max_retries:
+            raise
+        raise self.retry(exc=exc, max_retries=max_retries, countdown=30 * (self.request.retries + 1))
 
 
 @shared_task
