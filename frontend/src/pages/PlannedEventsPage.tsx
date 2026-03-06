@@ -1,8 +1,8 @@
 import { useMemo, useState, useEffect } from "react";
+import { motion, AnimatePresence } from "framer-motion";
 
 import { Button } from "@/components/ui/Button";
 import { Section } from "@/components/ui/Section";
-import { Table, TableWrapper } from "@/components/ui/Table";
 import { useAuth } from "@/context/AuthContext";
 import {
   getBackups,
@@ -29,6 +29,8 @@ type PlannedEvent = {
   type: PlannedEventType;
   minuteOfDay: number;
   label: string;
+  dbName?: string;
+  targetName?: string;
 };
 
 type DaySummary = {
@@ -44,6 +46,7 @@ type DayStatus = {
 };
 
 const WEEKDAY_HEADERS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const WEEKDAY_FULL = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 const MONTH_OPTIONS = [
   "January",
   "February",
@@ -58,6 +61,12 @@ const MONTH_OPTIONS = [
   "November",
   "December",
 ];
+
+const EVENT_COLORS: Record<PlannedEventType, { bg: string; text: string; border: string; dot: string; badge: string }> = {
+  backup: { bg: "bg-blue-50", text: "text-blue-700", border: "border-blue-200", dot: "bg-blue-500", badge: "bg-blue-100 text-blue-700" },
+  restore: { bg: "bg-amber-50", text: "text-amber-700", border: "border-amber-200", dot: "bg-amber-500", badge: "bg-amber-100 text-amber-700" },
+  replication: { bg: "bg-violet-50", text: "text-violet-700", border: "border-violet-200", dot: "bg-violet-500", badge: "bg-violet-100 text-violet-700" },
+};
 
 function toConfigWeekday(jsWeekday: number) {
   return (jsWeekday + 6) % 7;
@@ -149,6 +158,72 @@ function restoreTimesForDay(restoreVersion: RestoreConfigVersion, weekday: numbe
   const weekdayTimes = (restoreVersion.restore_days_of_week ?? []).includes(weekday) ? [0] : [];
   return mergeMinutes(intervalTimes, weekdayTimes);
 }
+
+/* ------------------------------------------------------------------ */
+/*  Kanban Card                                                       */
+/* ------------------------------------------------------------------ */
+
+function KanbanCard({ event, index }: { event: PlannedEvent; index: number }) {
+  const colors = EVENT_COLORS[event.type];
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ delay: index * 0.03, duration: 0.25 }}
+      className={`rounded-xl border ${colors.border} ${colors.bg} p-3 shadow-sm transition-shadow hover:shadow-md`}
+    >
+      <p className="text-[11px] font-medium text-muted-foreground">{formatTime(event.minuteOfDay)}</p>
+      <p className={`mt-1 text-sm font-semibold ${colors.text}`}>{event.dbName ?? event.label}</p>
+      {event.targetName && (
+        <p className="mt-0.5 text-xs text-muted-foreground">→ {event.targetName}</p>
+      )}
+    </motion.div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Kanban Column                                                     */
+/* ------------------------------------------------------------------ */
+
+function KanbanColumn({
+  title,
+  icon,
+  events,
+  type,
+}: {
+  title: string;
+  icon: React.ReactNode;
+  events: PlannedEvent[];
+  type: PlannedEventType;
+}) {
+  const colors = EVENT_COLORS[type];
+  return (
+    <div className="flex flex-1 flex-col rounded-2xl border border-border bg-white shadow-soft">
+      {/* Column header */}
+      <div className={`flex items-center gap-2 rounded-t-2xl border-b ${colors.border} ${colors.bg} px-4 py-3`}>
+        <span className={`flex h-7 w-7 items-center justify-center rounded-lg ${colors.badge}`}>
+          {icon}
+        </span>
+        <h3 className={`text-sm font-bold ${colors.text}`}>{title}</h3>
+        <span className={`ml-auto rounded-full px-2 py-0.5 text-xs font-semibold ${colors.badge}`}>
+          {events.length}
+        </span>
+      </div>
+      {/* Cards */}
+      <div className="flex flex-1 flex-col gap-2 overflow-y-auto p-3" style={{ maxHeight: "60vh" }}>
+        {events.length > 0 ? (
+          events.map((event, idx) => <KanbanCard key={`${event.minuteOfDay}-${idx}`} event={event} index={idx} />)
+        ) : (
+          <p className="py-8 text-center text-xs text-muted-foreground">No events</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Main Page Component                                               */
+/* ------------------------------------------------------------------ */
 
 export function PlannedEventsPage() {
   const { accessToken } = useAuth();
@@ -323,11 +398,11 @@ export function PlannedEventsPage() {
     return daySummaryMap.get(dayKey(selectedDate)) ?? null;
   }, [selectedDate, daySummaryMap]);
 
-  const selectedDayEventsByHour = useMemo(() => {
-    if (!selectedDate) return [] as Array<{ hour: number; events: PlannedEvent[] }>;
+  const selectedDayEvents = useMemo(() => {
+    if (!selectedDate) return { backup: [], restore: [], replication: [] } as Record<PlannedEventType, PlannedEvent[]>;
     const weekday = toConfigWeekday(selectedDate.getDay());
 
-    const allEvents: PlannedEvent[] = [];
+    const events: Record<PlannedEventType, PlannedEvent[]> = { backup: [], restore: [], replication: [] };
     const activeBackupVersionByConfig = new Map<number, DatabaseConfigVersion>();
     const backupTimesByConfig = new Map<number, number[]>();
 
@@ -338,7 +413,7 @@ export function PlannedEventsPage() {
       const times = backupTimesForDay(configVersion, weekday);
       backupTimesByConfig.set(configVersion.database_config, times);
       for (const minuteOfDay of times) {
-        allEvents.push({ type: "backup", minuteOfDay, label: `${dbName} backup` });
+        events.backup.push({ type: "backup", minuteOfDay, label: `${dbName} backup`, dbName });
       }
     }
 
@@ -350,7 +425,7 @@ export function PlannedEventsPage() {
       const sourceBackupTimes = backupTimesByConfig.get(policyVersion.database_config) ?? [];
       const times = replicationTimesForDay(policyVersion, weekday, sourceBackupTimes);
       for (const minuteOfDay of times) {
-        allEvents.push({ type: "replication", minuteOfDay, label: `${sourceName} → ${hostName} replication` });
+        events.replication.push({ type: "replication", minuteOfDay, label: `${sourceName} → ${hostName}`, dbName: sourceName, targetName: hostName });
       }
     }
 
@@ -363,169 +438,276 @@ export function PlannedEventsPage() {
       const targetName = `${targetDb.name} (${targetDb.db_type})`;
       const times = restoreTimesForDay(restoreVersion, weekday);
       for (const minuteOfDay of times) {
-        allEvents.push({ type: "restore", minuteOfDay, label: `${sourceName} → ${targetName} restore` });
+        events.restore.push({ type: "restore", minuteOfDay, label: `${sourceName} → ${targetName}`, dbName: sourceName, targetName });
       }
     }
 
-    const grouped = Array.from({ length: 24 }, (_, hour) => ({ hour, events: [] as PlannedEvent[] }));
-    allEvents
-      .sort((a, b) => a.minuteOfDay - b.minuteOfDay)
-      .forEach((event) => {
-        const hour = Math.floor(event.minuteOfDay / 60);
-        grouped[hour].events.push(event);
-      });
+    events.backup.sort((a, b) => a.minuteOfDay - b.minuteOfDay);
+    events.restore.sort((a, b) => a.minuteOfDay - b.minuteOfDay);
+    events.replication.sort((a, b) => a.minuteOfDay - b.minuteOfDay);
 
-    return grouped.filter((entry) => entry.events.length > 0);
+    return events;
   }, [selectedDate, configVersions, replicationPolicyVersions, restoreConfigVersions, dbById, hostById]);
 
   const todayStart = startOfDay(new Date());
+  const today = new Date();
+  const todayKey = dayKey(today);
+
+  /* --- Calendar View ---------------------------------------------------- */
+  if (!selectedDate) {
+    return (
+      <Section label="planner" title="Planned Events">
+        {/* Month / Year navigation */}
+        <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-border bg-gradient-to-r from-white to-muted/40 p-4 shadow-soft">
+          <button
+            type="button"
+            className="flex h-9 w-9 items-center justify-center rounded-xl border border-border bg-white text-foreground shadow-sm transition hover:bg-muted"
+            onClick={() => {
+              setMonthCursor((prev) => new Date(prev.getFullYear(), prev.getMonth() - 1, 1));
+            }}
+          >
+            ‹
+          </button>
+
+          <select
+            className="h-9 rounded-xl border border-border bg-white px-3 text-sm font-medium shadow-sm focus:outline-none focus:ring-2 focus:ring-accent/40"
+            value={monthCursor.getMonth()}
+            onChange={(e) => {
+              const month = Number(e.target.value);
+              setMonthCursor((prev) => new Date(prev.getFullYear(), month, 1));
+            }}
+          >
+            {MONTH_OPTIONS.map((month, idx) => (
+              <option key={month} value={idx}>{month}</option>
+            ))}
+          </select>
+
+          <select
+            className="h-9 rounded-xl border border-border bg-white px-3 text-sm font-medium shadow-sm focus:outline-none focus:ring-2 focus:ring-accent/40"
+            value={monthCursor.getFullYear()}
+            onChange={(e) => {
+              const year = Number(e.target.value);
+              setMonthCursor((prev) => new Date(year, prev.getMonth(), 1));
+            }}
+          >
+            {yearOptions.map((year) => (
+              <option key={year} value={year}>{year}</option>
+            ))}
+          </select>
+
+          <button
+            type="button"
+            className="flex h-9 w-9 items-center justify-center rounded-xl border border-border bg-white text-foreground shadow-sm transition hover:bg-muted"
+            onClick={() => {
+              setMonthCursor((prev) => new Date(prev.getFullYear(), prev.getMonth() + 1, 1));
+            }}
+          >
+            ›
+          </button>
+
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() => {
+              const now = new Date();
+              setMonthCursor(new Date(now.getFullYear(), now.getMonth(), 1));
+            }}
+          >
+            Today
+          </Button>
+
+          {/* Legend */}
+          <div className="ml-auto flex items-center gap-4 text-xs text-muted-foreground">
+            <span className="flex items-center gap-1"><span className={`inline-block h-2.5 w-2.5 rounded-full ${EVENT_COLORS.backup.dot}`} /> Backups</span>
+            <span className="flex items-center gap-1"><span className={`inline-block h-2.5 w-2.5 rounded-full ${EVENT_COLORS.restore.dot}`} /> Restorations</span>
+            <span className="flex items-center gap-1"><span className={`inline-block h-2.5 w-2.5 rounded-full ${EVENT_COLORS.replication.dot}`} /> Replications</span>
+          </div>
+        </div>
+
+        {loading && <p className="text-sm text-muted-foreground">Loading planned events…</p>}
+        {error && <p className="text-sm text-failure">{error}</p>}
+
+        {/* Calendar grid */}
+        <div className="overflow-hidden rounded-2xl border border-border bg-white shadow-soft">
+          {/* Weekday header row */}
+          <div className="grid grid-cols-7 border-b border-border bg-gradient-to-r from-slate-50 to-slate-100">
+            {WEEKDAY_HEADERS.map((day, i) => (
+              <p key={day} className={`py-3 text-center text-xs font-bold uppercase tracking-widest ${i >= 5 ? "text-muted-foreground/60" : "text-muted-foreground"}`}>
+                {day}
+              </p>
+            ))}
+          </div>
+
+          {/* Day cells */}
+          <div className="grid grid-cols-7">
+            {monthDays.map((date, index) => {
+              if (!date) {
+                return <div key={`empty-${index}`} className="min-h-[7rem] border-b border-r border-border/50 bg-slate-50/50" />;
+              }
+
+              const key = dayKey(date);
+              const summary = daySummaryMap.get(key);
+              const status = dayStatusMap.get(key);
+              const isToday = key === todayKey;
+              const isPast = endOfDay(date) < todayStart;
+              const showStatusDot = isPast && (status?.total ?? 0) > 0;
+              const hasFailure = (status?.failed ?? 0) > 0;
+              const totalEvents = (summary?.backups ?? 0) + (summary?.restores ?? 0) + (summary?.replications ?? 0);
+              const isWeekend = date.getDay() === 0 || date.getDay() === 6;
+
+              return (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => setSelectedDate(date)}
+                  className={`group relative min-h-[7rem] border-b border-r border-border/50 p-2 text-left transition-all duration-200 hover:z-10 hover:shadow-lg ${
+                    isToday
+                      ? "bg-accent/5 ring-2 ring-inset ring-accent/30"
+                      : isWeekend
+                        ? "bg-slate-50/70 hover:bg-white"
+                        : "bg-white hover:bg-blue-50/30"
+                  }`}
+                >
+                  {/* Day number + status */}
+                  <div className="flex items-center justify-between">
+                    <span
+                      className={`flex h-7 w-7 items-center justify-center rounded-full text-sm font-semibold transition-colors ${
+                        isToday
+                          ? "bg-accent text-white"
+                          : isPast
+                            ? "text-muted-foreground/60"
+                            : "text-foreground group-hover:bg-accent/10 group-hover:text-accent"
+                      }`}
+                    >
+                      {date.getDate()}
+                    </span>
+                    {showStatusDot && (
+                      <span className={`h-2 w-2 rounded-full ${hasFailure ? "bg-failure animate-pulse" : "bg-success"}`} />
+                    )}
+                  </div>
+
+                  {/* Event indicator chips */}
+                  {totalEvents > 0 && (
+                    <div className="mt-1.5 flex flex-wrap gap-1">
+                      {(summary?.backups ?? 0) > 0 && (
+                        <span className={`inline-flex items-center gap-0.5 rounded-md px-1.5 py-0.5 text-[10px] font-semibold ${EVENT_COLORS.backup.badge}`}>
+                          <span className={`h-1.5 w-1.5 rounded-full ${EVENT_COLORS.backup.dot}`} />
+                          {summary!.backups}
+                        </span>
+                      )}
+                      {(summary?.restores ?? 0) > 0 && (
+                        <span className={`inline-flex items-center gap-0.5 rounded-md px-1.5 py-0.5 text-[10px] font-semibold ${EVENT_COLORS.restore.badge}`}>
+                          <span className={`h-1.5 w-1.5 rounded-full ${EVENT_COLORS.restore.dot}`} />
+                          {summary!.restores}
+                        </span>
+                      )}
+                      {(summary?.replications ?? 0) > 0 && (
+                        <span className={`inline-flex items-center gap-0.5 rounded-md px-1.5 py-0.5 text-[10px] font-semibold ${EVENT_COLORS.replication.badge}`}>
+                          <span className={`h-1.5 w-1.5 rounded-full ${EVENT_COLORS.replication.dot}`} />
+                          {summary!.replications}
+                        </span>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Activity bar at bottom */}
+                  {totalEvents > 0 && (
+                    <div className="absolute bottom-0 left-0 right-0 flex h-1">
+                      {(summary?.backups ?? 0) > 0 && <div className={`flex-1 ${EVENT_COLORS.backup.dot} opacity-40`} />}
+                      {(summary?.restores ?? 0) > 0 && <div className={`flex-1 ${EVENT_COLORS.restore.dot} opacity-40`} />}
+                      {(summary?.replications ?? 0) > 0 && <div className={`flex-1 ${EVENT_COLORS.replication.dot} opacity-40`} />}
+                    </div>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      </Section>
+    );
+  }
+
+  /* --- Kanban Day Detail View ------------------------------------------- */
+  const weekdayName = WEEKDAY_FULL[toConfigWeekday(selectedDate.getDay())];
 
   return (
     <Section label="planner" title="Planned Events">
-      <div className="mb-4 flex flex-wrap items-center gap-2 rounded-2xl border border-border bg-muted/30 p-3">
-        <p className="text-sm font-medium text-foreground">Month</p>
-        <select
-          className="h-9 rounded-xl border border-border bg-white px-3 text-sm shadow-soft"
-          value={monthCursor.getMonth()}
-          onChange={(e) => {
-            const month = Number(e.target.value);
-            setMonthCursor((prev) => new Date(prev.getFullYear(), month, 1));
-            setSelectedDate(null);
-          }}
-        >
-          {MONTH_OPTIONS.map((month, idx) => (
-            <option key={month} value={idx}>{month}</option>
-          ))}
-        </select>
-
-        <p className="text-sm font-medium text-foreground">Year</p>
-        <select
-          className="h-9 rounded-xl border border-border bg-white px-3 text-sm shadow-soft"
-          value={monthCursor.getFullYear()}
-          onChange={(e) => {
-            const year = Number(e.target.value);
-            setMonthCursor((prev) => new Date(year, prev.getMonth(), 1));
-            setSelectedDate(null);
-          }}
-        >
-          {yearOptions.map((year) => (
-            <option key={year} value={year}>{year}</option>
-          ))}
-        </select>
-
+      {/* Back button + day header */}
+      <motion.div
+        initial={{ opacity: 0, y: -10 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.3 }}
+        className="flex flex-wrap items-center gap-4 rounded-2xl border border-border bg-gradient-to-r from-white to-muted/40 p-4 shadow-soft"
+      >
         <Button
           size="sm"
           variant="secondary"
-          onClick={() => {
-            const now = new Date();
-            setMonthCursor(new Date(now.getFullYear(), now.getMonth(), 1));
-            setSelectedDate(null);
-          }}
+          onClick={() => setSelectedDate(null)}
         >
-          Current Month
+          ← Back to Calendar
         </Button>
-      </div>
 
-      {loading && <p className="mb-4 text-sm text-muted-foreground">Loading planned events...</p>}
-      {error && <p className="mb-4 text-sm text-failure">{error}</p>}
-
-      <div className="rounded-2xl border border-border bg-white p-3 shadow-soft">
-        <div className="grid grid-cols-7 gap-2">
-          {WEEKDAY_HEADERS.map((day) => (
-            <p key={day} className="px-2 py-1 text-center text-xs font-medium uppercase tracking-wide text-muted-foreground">
-              {day}
-            </p>
-          ))}
-
-          {monthDays.map((date, index) => {
-            if (!date) {
-              return <div key={`empty-${index}`} className="h-24 rounded-lg border border-transparent" />;
-            }
-
-            const key = dayKey(date);
-            const summary = daySummaryMap.get(key);
-            const status = dayStatusMap.get(key);
-            const isSelected = selectedDate != null && dayKey(selectedDate) === key;
-            const isPast = endOfDay(date) < todayStart;
-            const showStatusDot = isPast && (status?.total ?? 0) > 0;
-            const hasFailure = (status?.failed ?? 0) > 0;
-
-            return (
-              <button
-                key={key}
-                type="button"
-                onClick={() => setSelectedDate(date)}
-                className={`h-24 rounded-lg border p-2 text-left transition ${
-                  isSelected
-                    ? "border-accent bg-accent/10"
-                    : "border-border hover:border-accent/40 hover:bg-muted/40"
-                }`}
-              >
-                <div className="flex items-center justify-between">
-                  <p className="text-sm font-medium text-foreground">{date.getDate()}</p>
-                  {showStatusDot && (
-                    <span className={`h-2.5 w-2.5 rounded-full ${hasFailure ? "bg-failure" : "bg-success"}`} />
-                  )}
-                </div>
-                <div className="mt-1 space-y-0.5 text-[11px] text-muted-foreground">
-                  <p>B: {summary?.backups ?? 0}</p>
-                  <p>R: {summary?.restores ?? 0}</p>
-                  <p>P: {summary?.replications ?? 0}</p>
-                </div>
-              </button>
-            );
-          })}
+        <div className="flex-1">
+          <h3 className="font-headline text-xl text-foreground">
+            {weekdayName}, {MONTH_OPTIONS[selectedDate.getMonth()]} {selectedDate.getDate()}, {selectedDate.getFullYear()}
+          </h3>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            {selectedDaySummary?.backups ?? 0} backups · {selectedDaySummary?.restores ?? 0} restorations · {selectedDaySummary?.replications ?? 0} replications
+          </p>
         </div>
-      </div>
 
-      <div className="mt-4 rounded-2xl border border-border bg-white p-4 shadow-soft">
-        <p className="text-sm font-medium text-foreground">Day Timeline</p>
-        {selectedDate ? (
-          <>
-            <p className="mt-1 text-xs text-muted-foreground">
-              {selectedDate.toLocaleDateString()} · Planned backups {selectedDaySummary?.backups ?? 0}, restores {selectedDaySummary?.restores ?? 0}, replications {selectedDaySummary?.replications ?? 0}
-            </p>
+        {/* Summary badges */}
+        <div className="flex items-center gap-2">
+          <span className={`rounded-full px-3 py-1 text-xs font-bold ${EVENT_COLORS.backup.badge}`}>
+            {selectedDayEvents.backup.length} Backups
+          </span>
+          <span className={`rounded-full px-3 py-1 text-xs font-bold ${EVENT_COLORS.restore.badge}`}>
+            {selectedDayEvents.restore.length} Restorations
+          </span>
+          <span className={`rounded-full px-3 py-1 text-xs font-bold ${EVENT_COLORS.replication.badge}`}>
+            {selectedDayEvents.replication.length} Replications
+          </span>
+        </div>
+      </motion.div>
 
-            <TableWrapper className="mt-3">
-              <Table>
-                <thead>
-                  <tr className="border-b border-border text-left text-xs uppercase tracking-wider text-muted-foreground">
-                    <th className="px-4 py-3">Hour</th>
-                    <th className="px-4 py-3">Planned Events</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {selectedDayEventsByHour.map((entry) => (
-                    <tr key={entry.hour} className="border-b border-border/70 hover:bg-muted/50">
-                      <td className="px-4 py-2 text-xs text-muted-foreground">
-                        {String(entry.hour).padStart(2, "0")}:00
-                      </td>
-                      <td className="px-4 py-2">
-                        <div className="space-y-1">
-                          {entry.events.map((event, idx) => (
-                            <p key={`${entry.hour}-${idx}`} className="text-xs text-foreground">
-                              <span className="mr-2 text-muted-foreground">{formatTime(event.minuteOfDay)}</span>
-                              <span className="uppercase tracking-wide text-muted-foreground">{event.type}</span>
-                              <span className="mx-2 text-muted-foreground">•</span>
-                              {event.label}
-                            </p>
-                          ))}
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </Table>
-            </TableWrapper>
-
-            {selectedDayEventsByHour.length === 0 && (
-              <p className="mt-3 text-sm text-muted-foreground">No planned events for this date.</p>
-            )}
-          </>
-        ) : (
-          <p className="mt-2 text-sm text-muted-foreground">Click a date to see hour-by-hour planned events.</p>
-        )}
-      </div>
+      {/* Kanban columns */}
+      <motion.div
+        initial={{ opacity: 0, y: 16 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.4, delay: 0.1 }}
+        className="grid grid-cols-1 gap-4 md:grid-cols-3"
+      >
+        <KanbanColumn
+          title="Backups"
+          type="backup"
+          events={selectedDayEvents.backup}
+          icon={
+            <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 7v10c0 2 1 3 3 3h10c2 0 3-1 3-3V7M4 7c0-2 1-3 3-3h10c2 0 3 1 3 3M4 7h16M8 11h.01M12 11h.01M16 11h.01" />
+            </svg>
+          }
+        />
+        <KanbanColumn
+          title="Restorations"
+          type="restore"
+          events={selectedDayEvents.restore}
+          icon={
+            <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
+          }
+        />
+        <KanbanColumn
+          title="Replications"
+          type="replication"
+          events={selectedDayEvents.replication}
+          icon={
+            <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
+            </svg>
+          }
+        />
+      </motion.div>
     </Section>
   );
 }
