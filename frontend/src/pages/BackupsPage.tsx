@@ -12,6 +12,7 @@ import {
   getBackupDeletionRequests,
   getBackups,
   getConfigs,
+  getConfigVersions,
   getDatabases,
   getReplicationPolicies,
   getRestoreConfigs,
@@ -21,7 +22,7 @@ import {
   restoreBackup,
   triggerBackup,
 } from "@/lib/api";
-import { Backup, BackupDeletionRequest, Database, DatabaseConfig, ReplicationPolicy, RestoreConfig, StorageHost } from "@/types/api";
+import { Backup, BackupDeletionRequest, Database, DatabaseConfig, DatabaseConfigVersion, ReplicationPolicy, RestoreConfig, StorageHost } from "@/types/api";
 
 function formatBytes(bytes: number) {
   if (!bytes) return "0 B";
@@ -168,6 +169,7 @@ export function BackupsPage() {
   const [error, setError] = useState<string | null>(null);
   const [rows, setRows] = useState<Backup[]>([]);
   const [configs, setConfigs] = useState<DatabaseConfig[]>([]);
+  const [configVersions, setConfigVersions] = useState<DatabaseConfigVersion[]>([]);
   const [databases, setDatabases] = useState<Database[]>([]);
   const [storageHosts, setStorageHosts] = useState<StorageHost[]>([]);
   const [replicationPolicies, setReplicationPolicies] = useState<ReplicationPolicy[]>([]);
@@ -179,12 +181,30 @@ export function BackupsPage() {
   const dbById = useMemo(() => new Map(databases.map((d) => [d.id, d])), [databases]);
   const configById = useMemo(() => new Map(configs.map((c) => [c.id, c])), [configs]);
   const storageHostById = useMemo(() => new Map(storageHosts.map((h) => [h.id, h])), [storageHosts]);
+  const latestVersionByConfigId = useMemo(() => {
+    const latest = new Map<number, DatabaseConfigVersion>();
+    for (const version of configVersions) {
+      const current = latest.get(version.database_config);
+      if (!current || new Date(version.effective_from).getTime() > new Date(current.effective_from).getTime()) {
+        latest.set(version.database_config, version);
+      }
+    }
+    return latest;
+  }, [configVersions]);
 
   const dbNameForConfig = (configId: number) => {
     const cfg = configById.get(configId);
-    if (!cfg) return `Config ${configId}`;
-    const db = dbById.get(cfg.database);
-    return db?.name ?? `Database ${cfg.database}`;
+    const version = latestVersionByConfigId.get(configId);
+    const databaseId = cfg?.database ?? version?.database;
+    if (!databaseId) return `Config ${configId}`;
+    const db = dbById.get(databaseId);
+    return db?.name ?? `Database ${databaseId}`;
+  };
+
+  const isOneTimeConfig = (configId: number) => {
+    const cfg = configById.get(configId);
+    if (cfg) return cfg.is_one_time_event;
+    return latestVersionByConfigId.get(configId)?.is_one_time_event ?? false;
   };
 
   const loadData = async () => {
@@ -192,9 +212,10 @@ export function BackupsPage() {
     setLoading(true);
     setError(null);
     try {
-      const [backups, cfgs, dbs, shs, policies, restores] = await Promise.all([
+      const [backups, cfgs, cfgVersions, dbs, shs, policies, restores] = await Promise.all([
         getBackups(accessToken),
         getConfigs(accessToken),
+        getConfigVersions(accessToken),
         getDatabases(accessToken),
         getStorageHosts(accessToken),
         getReplicationPolicies(accessToken),
@@ -202,6 +223,7 @@ export function BackupsPage() {
       ]);
       setRows(backups);
       setConfigs(cfgs);
+      setConfigVersions(cfgVersions);
       setDatabases(dbs);
       setStorageHosts(shs);
       setReplicationPolicies(policies);
@@ -408,7 +430,11 @@ export function BackupsPage() {
   };
 
   const selectedDb = selectedBackup
-    ? dbById.get(configById.get(selectedBackup.database_config)?.database ?? -1)
+    ? dbById.get(
+      configById.get(selectedBackup.database_config)?.database
+      ?? latestVersionByConfigId.get(selectedBackup.database_config)?.database
+      ?? -1,
+    )
     : null;
 
   const selectedConfig = useMemo(() => configs.find((cfg) => cfg.id === selectedConfigId), [configs, selectedConfigId]);
@@ -644,7 +670,12 @@ export function BackupsPage() {
                   />
                 </td>
                 <td className="px-4 py-2 text-xs">{row.id}</td>
-                <td className="px-4 py-2 text-xs">{dbNameForConfig(row.database_config)}</td>
+                <td className="px-4 py-2 text-xs">
+                  <div className="flex items-center gap-2">
+                    <span>{dbNameForConfig(row.database_config)}</span>
+                    {isOneTimeConfig(row.database_config) && <Badge variant="neutral">One-time</Badge>}
+                  </div>
+                </td>
                 <td className="px-4 py-2 text-xs">{formatBytes(row.file_size)}</td>
                 <td className="px-4 py-2"><StatusBadge status={row.status} /></td>
                 <td className="px-4 py-2">

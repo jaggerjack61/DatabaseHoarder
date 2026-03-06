@@ -1,8 +1,9 @@
 from celery import shared_task
 from django.db import close_old_connections
+from django.db.models import Q
 from django.utils import timezone
 
-from apps.hosts.models import DatabaseConfig, RestoreConfig
+from apps.hosts.models import DatabaseConfig, ReplicationPolicy, RestoreConfig
 
 from .services import execute_backup, execute_replication, execute_restore
 
@@ -125,11 +126,18 @@ def schedule_due_backups():
     close_old_connections()
     now = timezone.now()
     today_weekday = now.weekday()  # 0=Mon … 6=Sun
-    queryset = DatabaseConfig.objects.filter(enabled=True, database__is_active=True).select_related("database")
+    queryset = (
+        DatabaseConfig.objects.filter(enabled=True, database__is_active=True, versions__effective_from__lte=now)
+        .filter(Q(versions__effective_to__isnull=True) | Q(versions__effective_to__gt=now))
+        .select_related("database")
+        .distinct()
+    )
 
     for config in queryset:
         allowed_days = config.backup_days_of_week or []
         day_due = bool(allowed_days) and today_weekday in allowed_days
+        if day_due and config.last_backup_at and config.last_backup_at.date() == now.date():
+            day_due = False
         interval_due = False
         if config.backup_frequency_minutes:
             if config.last_backup_at is None:
@@ -148,17 +156,22 @@ def schedule_due_replications():
     Finds the latest successful backup for each due policy and enqueues replication.
     """
     close_old_connections()
-    from apps.hosts.models import ReplicationPolicy
-
     from .models import Backup, BackupStatus
     from .services import apply_replication_retention
 
     now = timezone.now()
-    policies = ReplicationPolicy.objects.filter(enabled=True).select_related("database_config__database", "storage_host")
+    policies = (
+        ReplicationPolicy.objects.filter(enabled=True, versions__effective_from__lte=now)
+        .filter(Q(versions__effective_to__isnull=True) | Q(versions__effective_to__gt=now))
+        .select_related("database_config__database", "storage_host")
+        .distinct()
+    )
 
     for policy in policies:
         allowed_days = policy.replication_days_of_week or []
         day_due = bool(allowed_days) and now.weekday() in allowed_days
+        if day_due and policy.last_replicated_at and policy.last_replicated_at.date() == now.date():
+            day_due = False
         interval_due = False
         if policy.replication_frequency_minutes is not None and policy.replication_frequency_minutes > 0:
             if policy.last_replicated_at is None:
@@ -195,12 +208,18 @@ def schedule_due_restores():
     close_old_connections()
     now = timezone.now()
     weekday = now.weekday()
-    queryset = RestoreConfig.objects.filter(
-        enabled=True,
-        source_config__enabled=True,
-        source_config__database__is_active=True,
-        target_database__is_active=True,
-    ).select_related("source_config", "target_database")
+    queryset = (
+        RestoreConfig.objects.filter(
+            enabled=True,
+            source_config__enabled=True,
+            source_config__database__is_active=True,
+            target_database__is_active=True,
+            versions__effective_from__lte=now,
+        )
+        .filter(Q(versions__effective_to__isnull=True) | Q(versions__effective_to__gt=now))
+        .select_related("source_config", "target_database")
+        .distinct()
+    )
 
     for restore_config in queryset:
         allowed_days = restore_config.restore_days_of_week or []

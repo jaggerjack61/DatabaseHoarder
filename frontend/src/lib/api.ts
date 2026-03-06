@@ -252,6 +252,8 @@ export function createConfig(
     retention_exception_days?: number | null;
     retention_exception_max_days?: number | null;
     enabled: boolean;
+    schedule_for_date?: string;
+    is_one_time_event?: boolean;
   },
 ) {
   return request<DatabaseConfig>("/api/hosts/configs/", { method: "POST", body: JSON.stringify(payload) }, accessToken);
@@ -289,6 +291,8 @@ export function createReplicationPolicy(
     replication_retention_days?: number | null;
     replication_retention_exception_days?: number | null;
     replication_retention_exception_max_days?: number | null;
+    schedule_for_date?: string;
+    is_one_time_event?: boolean;
   },
 ) {
   return request<ReplicationPolicy>("/api/hosts/replication-policies/", { method: "POST", body: JSON.stringify(payload) }, accessToken);
@@ -323,6 +327,8 @@ export function createRestoreConfig(
     restore_days_of_week?: number[];
     drop_target_on_success?: boolean;
     enabled: boolean;
+    schedule_for_date?: string;
+    is_one_time_event?: boolean;
   },
 ) {
   return request<RestoreConfig>("/api/hosts/restore-configs/", { method: "POST", body: JSON.stringify(payload) }, accessToken);

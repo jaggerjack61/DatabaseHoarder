@@ -1,11 +1,16 @@
-import { useMemo, useState, useEffect } from "react";
-import { motion, AnimatePresence } from "framer-motion";
+import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { motion } from "framer-motion";
 
 import { Button } from "@/components/ui/Button";
+import { Modal } from "@/components/ui/Modal";
 import { Section } from "@/components/ui/Section";
 import { useAuth } from "@/context/AuthContext";
 import {
+  createConfig,
+  createReplicationPolicy,
+  createRestoreConfig,
   getBackups,
+  getConfigs,
   getConfigVersions,
   getDatabases,
   getReplicationPolicyVersions,
@@ -16,6 +21,7 @@ import {
 import {
   Backup,
   Database,
+  DatabaseConfig,
   DatabaseConfigVersion,
   ReplicationPolicyVersion,
   RestoreConfigVersion,
@@ -31,6 +37,7 @@ type PlannedEvent = {
   label: string;
   dbName?: string;
   targetName?: string;
+  isOneTime?: boolean;
 };
 
 type DaySummary = {
@@ -43,6 +50,11 @@ type DaySummary = {
 type DayStatus = {
   total: number;
   failed: number;
+};
+
+type EventGroups = {
+  scheduled: Record<PlannedEventType, PlannedEvent[]>;
+  oneTime: Record<PlannedEventType, PlannedEvent[]>;
 };
 
 const WEEKDAY_HEADERS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -94,10 +106,7 @@ function parseDate(value?: string | null) {
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
-function isVersionActiveOnDate(
-  value: { effective_from: string; effective_to: string | null },
-  date: Date,
-) {
+function isVersionActiveOnDate(value: { effective_from: string; effective_to: string | null }, date: Date) {
   const from = parseDate(value.effective_from);
   const to = parseDate(value.effective_to);
   const dayStart = startOfDay(date);
@@ -159,60 +168,355 @@ function restoreTimesForDay(restoreVersion: RestoreConfigVersion, weekday: numbe
   return mergeMinutes(intervalTimes, weekdayTimes);
 }
 
-/* ------------------------------------------------------------------ */
-/*  Kanban Card                                                       */
-/* ------------------------------------------------------------------ */
+function emptyEventGroups(): EventGroups {
+  return {
+    scheduled: { backup: [], restore: [], replication: [] },
+    oneTime: { backup: [], restore: [], replication: [] },
+  };
+}
 
 function KanbanCard({ event, index }: { event: PlannedEvent; index: number }) {
   const colors = EVENT_COLORS[event.type];
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ delay: index * 0.03, duration: 0.25 }}
-      className={`rounded-xl border ${colors.border} ${colors.bg} p-3 shadow-sm transition-shadow hover:shadow-md`}
+      className={`rounded-xl ${event.isOneTime ? "border-2 border-dashed" : "border"} ${colors.border} ${colors.bg} p-3 shadow-sm transition-shadow hover:shadow-md`}
     >
-      <p className="text-[11px] font-medium text-muted-foreground">{formatTime(event.minuteOfDay)}</p>
-      <p className={`mt-1 text-sm font-semibold ${colors.text}`}>{event.dbName ?? event.label}</p>
-      {event.targetName && (
-        <p className="mt-0.5 text-xs text-muted-foreground">→ {event.targetName}</p>
-      )}
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          <p className="text-[11px] font-medium text-muted-foreground">{event.isOneTime ? "One-time event" : formatTime(event.minuteOfDay)}</p>
+          <p className={`mt-1 text-sm font-semibold ${colors.text}`}>{event.dbName ?? event.label}</p>
+        </div>
+        {event.isOneTime && (
+          <span className={`rounded-md px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide ${colors.badge}`}>
+            One-time
+          </span>
+        )}
+      </div>
+      {event.targetName && <p className="mt-0.5 text-xs text-muted-foreground">→ {event.targetName}</p>}
     </motion.div>
   );
 }
 
-/* ------------------------------------------------------------------ */
-/*  Kanban Column                                                     */
-/* ------------------------------------------------------------------ */
+function AddEventModal({
+  open,
+  type,
+  selectedDate,
+  accessToken,
+  databases,
+  configs,
+  storageHosts,
+  dbById,
+  onClose,
+  onCreated,
+}: {
+  open: boolean;
+  type: PlannedEventType;
+  selectedDate: Date;
+  accessToken: string;
+  databases: Database[];
+  configs: DatabaseConfig[];
+  storageHosts: StorageHost[];
+  dbById: Map<number, Database>;
+  onClose: () => void;
+  onCreated: () => Promise<void>;
+}) {
+  const [backupDatabaseId, setBackupDatabaseId] = useState(0);
+  const [backupRetentionDays, setBackupRetentionDays] = useState(7);
+  const [restoreSourceConfigId, setRestoreSourceConfigId] = useState(0);
+  const [restoreTargetDatabaseId, setRestoreTargetDatabaseId] = useState(0);
+  const [dropTargetOnSuccess, setDropTargetOnSuccess] = useState(false);
+  const [replicationConfigId, setReplicationConfigId] = useState(0);
+  const [replicationStorageHostId, setReplicationStorageHostId] = useState(0);
+  const [replicationRemotePath, setReplicationRemotePath] = useState("/backups");
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+
+  const typeLabel = type === "backup" ? "Backup" : type === "restore" ? "Restoration" : "Replication";
+  const weekday = toConfigWeekday(selectedDate.getDay());
+  const scheduleForDate = dayKey(selectedDate);
+
+  const activeDatabases = useMemo(() => databases.filter((database) => database.is_active), [databases]);
+  const availableSourceConfigs = useMemo(
+    () => configs.filter((config) => !config.is_one_time_event && config.enabled),
+    [configs],
+  );
+
+  const restoreTargetOptions = useMemo(() => {
+    const sourceConfig = availableSourceConfigs.find((config) => config.id === restoreSourceConfigId);
+    const sourceDatabase = sourceConfig ? dbById.get(sourceConfig.database) : undefined;
+    if (!sourceDatabase) return activeDatabases;
+    return activeDatabases.filter((database) => database.db_type === sourceDatabase.db_type);
+  }, [activeDatabases, availableSourceConfigs, dbById, restoreSourceConfigId]);
+
+  useEffect(() => {
+    if (!open) return;
+    setSubmitError(null);
+    setSubmitting(false);
+    setBackupDatabaseId(activeDatabases[0]?.id ?? 0);
+    setBackupRetentionDays(7);
+    setRestoreSourceConfigId(availableSourceConfigs[0]?.id ?? 0);
+    setRestoreTargetDatabaseId(restoreTargetOptions[0]?.id ?? activeDatabases[0]?.id ?? 0);
+    setDropTargetOnSuccess(false);
+    setReplicationConfigId(availableSourceConfigs[0]?.id ?? 0);
+    setReplicationStorageHostId(storageHosts[0]?.id ?? 0);
+    setReplicationRemotePath("/backups");
+  }, [open, activeDatabases, availableSourceConfigs, restoreTargetOptions, storageHosts, type]);
+
+  useEffect(() => {
+    if (!restoreTargetOptions.some((database) => database.id === restoreTargetDatabaseId)) {
+      setRestoreTargetDatabaseId(restoreTargetOptions[0]?.id ?? 0);
+    }
+  }, [restoreTargetDatabaseId, restoreTargetOptions]);
+
+  const configLabel = (config: DatabaseConfig) => {
+    const database = dbById.get(config.database);
+    return database ? `${database.name} (${database.db_type})` : `Config ${config.id}`;
+  };
+
+  const close = () => {
+    if (submitting) return;
+    setSubmitError(null);
+    onClose();
+  };
+
+  const handleSubmit = async () => {
+    setSubmitError(null);
+    setSubmitting(true);
+
+    try {
+      if (type === "backup") {
+        if (!backupDatabaseId) throw new Error("Choose a database for the backup event.");
+        await createConfig(accessToken, {
+          database: backupDatabaseId,
+          backup_frequency_minutes: 0,
+          retention_days: Math.max(1, backupRetentionDays),
+          backup_days_of_week: [weekday],
+          retention_keep_monthly_first: false,
+          retention_keep_weekly_day: null,
+          retention_exception_days: null,
+          retention_exception_max_days: null,
+          enabled: true,
+          schedule_for_date: scheduleForDate,
+          is_one_time_event: true,
+        });
+      }
+
+      if (type === "restore") {
+        if (!restoreSourceConfigId) throw new Error("Choose a source backup config.");
+        if (!restoreTargetDatabaseId) throw new Error("Choose a target database.");
+        await createRestoreConfig(accessToken, {
+          source_config: restoreSourceConfigId,
+          target_database: restoreTargetDatabaseId,
+          restore_frequency_minutes: 0,
+          restore_days_of_week: [weekday],
+          drop_target_on_success: dropTargetOnSuccess,
+          enabled: true,
+          schedule_for_date: scheduleForDate,
+          is_one_time_event: true,
+        });
+      }
+
+      if (type === "replication") {
+        if (!replicationConfigId) throw new Error("Choose a source backup config.");
+        if (!replicationStorageHostId) throw new Error("Choose a storage host.");
+        if (!replicationRemotePath.trim()) throw new Error("Remote path is required.");
+        await createReplicationPolicy(accessToken, {
+          database_config: replicationConfigId,
+          storage_host: replicationStorageHostId,
+          remote_path: replicationRemotePath.trim(),
+          enabled: true,
+          replication_frequency_minutes: null,
+          replication_days_of_week: [weekday],
+          replication_retention_days: null,
+          replication_retention_exception_days: null,
+          replication_retention_exception_max_days: null,
+          schedule_for_date: scheduleForDate,
+          is_one_time_event: true,
+        });
+      }
+
+      await onCreated();
+      onClose();
+    } catch (error) {
+      setSubmitError(error instanceof Error ? error.message : `Failed to create ${typeLabel.toLowerCase()} event.`);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <Modal open={open} title={`Add ${typeLabel} Event`} onClose={close}>
+      <div className="space-y-4">
+        <p className="text-sm text-muted-foreground">
+          Create a hidden one-day {typeLabel.toLowerCase()} config for {MONTH_OPTIONS[selectedDate.getMonth()]} {selectedDate.getDate()}, {selectedDate.getFullYear()}.
+        </p>
+
+        {type === "backup" && (
+          <>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-muted-foreground">Database</label>
+              <select
+                value={backupDatabaseId}
+                onChange={(event) => setBackupDatabaseId(Number(event.target.value))}
+                className="h-10 w-full rounded-xl border border-border bg-white px-3 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-accent/40"
+              >
+                {activeDatabases.map((database) => (
+                  <option key={database.id} value={database.id}>{database.name} ({database.db_type})</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-muted-foreground">Retention Days</label>
+              <input
+                type="number"
+                min={1}
+                value={backupRetentionDays}
+                onChange={(event) => setBackupRetentionDays(Number(event.target.value))}
+                className="h-10 w-full rounded-xl border border-border bg-white px-3 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-accent/40"
+              />
+            </div>
+          </>
+        )}
+
+        {type === "restore" && (
+          <>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-muted-foreground">Source Backup Config</label>
+              <select
+                value={restoreSourceConfigId}
+                onChange={(event) => setRestoreSourceConfigId(Number(event.target.value))}
+                className="h-10 w-full rounded-xl border border-border bg-white px-3 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-accent/40"
+              >
+                {availableSourceConfigs.map((config) => (
+                  <option key={config.id} value={config.id}>{configLabel(config)}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-muted-foreground">Target Database</label>
+              <select
+                value={restoreTargetDatabaseId}
+                onChange={(event) => setRestoreTargetDatabaseId(Number(event.target.value))}
+                className="h-10 w-full rounded-xl border border-border bg-white px-3 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-accent/40"
+              >
+                {restoreTargetOptions.map((database) => (
+                  <option key={database.id} value={database.id}>{database.name} ({database.db_type})</option>
+                ))}
+              </select>
+            </div>
+            <label className="flex items-center gap-2 rounded-xl border border-border bg-white px-3 py-2 text-sm text-foreground shadow-sm">
+              <input
+                type="checkbox"
+                checked={dropTargetOnSuccess}
+                onChange={(event) => setDropTargetOnSuccess(event.target.checked)}
+              />
+              Drop target after successful restore
+            </label>
+          </>
+        )}
+
+        {type === "replication" && (
+          <>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-muted-foreground">Source Backup Config</label>
+              <select
+                value={replicationConfigId}
+                onChange={(event) => setReplicationConfigId(Number(event.target.value))}
+                className="h-10 w-full rounded-xl border border-border bg-white px-3 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-accent/40"
+              >
+                {availableSourceConfigs.map((config) => (
+                  <option key={config.id} value={config.id}>{configLabel(config)}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-muted-foreground">Storage Host</label>
+              <select
+                value={replicationStorageHostId}
+                onChange={(event) => setReplicationStorageHostId(Number(event.target.value))}
+                className="h-10 w-full rounded-xl border border-border bg-white px-3 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-accent/40"
+              >
+                {storageHosts.map((host) => (
+                  <option key={host.id} value={host.id}>{host.name}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-muted-foreground">Remote Path</label>
+              <input
+                type="text"
+                value={replicationRemotePath}
+                onChange={(event) => setReplicationRemotePath(event.target.value)}
+                className="h-10 w-full rounded-xl border border-border bg-white px-3 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-accent/40"
+              />
+            </div>
+          </>
+        )}
+
+        {submitError && <p className="text-sm text-failure">{submitError}</p>}
+
+        <div className="flex justify-end gap-2">
+          <Button size="sm" variant="secondary" onClick={close} disabled={submitting}>
+            Cancel
+          </Button>
+          <Button size="sm" variant="primary" onClick={() => void handleSubmit()} disabled={submitting}>
+            {submitting ? "Creating…" : `Add ${typeLabel} Event`}
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
 
 function KanbanColumn({
   title,
   icon,
-  events,
   type,
+  scheduledEvents,
+  oneTimeEvents,
+  onAddEvent,
 }: {
   title: string;
-  icon: React.ReactNode;
-  events: PlannedEvent[];
+  icon: ReactNode;
   type: PlannedEventType;
+  scheduledEvents: PlannedEvent[];
+  oneTimeEvents: PlannedEvent[];
+  onAddEvent: () => void;
 }) {
   const colors = EVENT_COLORS[type];
+  const totalCount = scheduledEvents.length + oneTimeEvents.length;
+
   return (
     <div className="flex flex-1 flex-col rounded-2xl border border-border bg-white shadow-soft">
-      {/* Column header */}
-      <div className={`flex items-center gap-2 rounded-t-2xl border-b ${colors.border} ${colors.bg} px-4 py-3`}>
-        <span className={`flex h-7 w-7 items-center justify-center rounded-lg ${colors.badge}`}>
-          {icon}
-        </span>
+      <div className={`flex flex-wrap items-center gap-2 rounded-t-2xl border-b ${colors.border} ${colors.bg} px-4 py-3`}>
+        <span className={`flex h-7 w-7 items-center justify-center rounded-lg ${colors.badge}`}>{icon}</span>
         <h3 className={`text-sm font-bold ${colors.text}`}>{title}</h3>
-        <span className={`ml-auto rounded-full px-2 py-0.5 text-xs font-semibold ${colors.badge}`}>
-          {events.length}
-        </span>
+        <span className={`ml-auto rounded-full px-2 py-0.5 text-xs font-semibold ${colors.badge}`}>{totalCount}</span>
+        <Button size="sm" variant="secondary" className="border-white/70 bg-white/80" onClick={onAddEvent}>
+          + Add Event
+        </Button>
       </div>
-      {/* Cards */}
       <div className="flex flex-1 flex-col gap-2 overflow-y-auto p-3" style={{ maxHeight: "60vh" }}>
-        {events.length > 0 ? (
-          events.map((event, idx) => <KanbanCard key={`${event.minuteOfDay}-${idx}`} event={event} index={idx} />)
+        {totalCount > 0 ? (
+          <>
+            {scheduledEvents.map((event, index) => (
+              <KanbanCard key={`${event.type}-${event.label}-${event.minuteOfDay}-${index}`} event={event} index={index} />
+            ))}
+            {oneTimeEvents.length > 0 && (
+              <div className="mt-2 border-t border-dashed border-border/80 pt-3">
+                <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground/70">One-Time Entries</p>
+                <div className="flex flex-col gap-2">
+                  {oneTimeEvents.map((event, index) => (
+                    <KanbanCard key={`${event.type}-${event.label}-${event.minuteOfDay}-${index}`} event={event} index={scheduledEvents.length + index} />
+                  ))}
+                </div>
+              </div>
+            )}
+          </>
         ) : (
           <p className="py-8 text-center text-xs text-muted-foreground">No events</p>
         )}
@@ -220,10 +524,6 @@ function KanbanColumn({
     </div>
   );
 }
-
-/* ------------------------------------------------------------------ */
-/*  Main Page Component                                               */
-/* ------------------------------------------------------------------ */
 
 export function PlannedEventsPage() {
   const { accessToken } = useAuth();
@@ -233,6 +533,7 @@ export function PlannedEventsPage() {
 
   const [backups, setBackups] = useState<Backup[]>([]);
   const [restoreJobs, setRestoreJobs] = useState<RestoreJob[]>([]);
+  const [configs, setConfigs] = useState<DatabaseConfig[]>([]);
   const [configVersions, setConfigVersions] = useState<DatabaseConfigVersion[]>([]);
   const [replicationPolicyVersions, setReplicationPolicyVersions] = useState<ReplicationPolicyVersion[]>([]);
   const [restoreConfigVersions, setRestoreConfigVersions] = useState<RestoreConfigVersion[]>([]);
@@ -244,6 +545,7 @@ export function PlannedEventsPage() {
     return new Date(now.getFullYear(), now.getMonth(), 1);
   });
   const [selectedDate, setSelectedDate] = useState<Date | null>(null);
+  const [addModalType, setAddModalType] = useState<PlannedEventType | null>(null);
 
   const yearOptions = useMemo(() => {
     const currentYear = new Date().getFullYear();
@@ -259,35 +561,49 @@ export function PlannedEventsPage() {
   const dbById = useMemo(() => new Map(databases.map((db) => [db.id, db])), [databases]);
   const hostById = useMemo(() => new Map(storageHosts.map((host) => [host.id, host])), [storageHosts]);
 
-  useEffect(() => {
+  const loadPlannerData = async () => {
     if (!accessToken) return;
     setLoading(true);
     setError(null);
 
-    void Promise.all([
-      getBackups(accessToken),
-      getRestoreJobs(accessToken),
-      getConfigVersions(accessToken),
-      getReplicationPolicyVersions(accessToken),
-      getRestoreConfigVersions(accessToken),
-      getDatabases(accessToken),
-      getStorageHosts(accessToken),
-    ])
-      .then(([backupRows, restoreRows, configVersionRows, policyVersionRows, restoreVersionRows, databaseRows, hostRows]) => {
-        setBackups(backupRows);
-        setRestoreJobs(restoreRows);
-        setConfigVersions(configVersionRows);
-        setReplicationPolicyVersions(policyVersionRows);
-        setRestoreConfigVersions(restoreVersionRows);
-        setDatabases(databaseRows);
-        setStorageHosts(hostRows);
-      })
-      .catch(() => {
-        setError("Unable to load planned events.");
-      })
-      .finally(() => {
-        setLoading(false);
-      });
+    try {
+      const [
+        backupRows,
+        restoreRows,
+        configRows,
+        configVersionRows,
+        policyVersionRows,
+        restoreVersionRows,
+        databaseRows,
+        hostRows,
+      ] = await Promise.all([
+        getBackups(accessToken),
+        getRestoreJobs(accessToken),
+        getConfigs(accessToken),
+        getConfigVersions(accessToken),
+        getReplicationPolicyVersions(accessToken),
+        getRestoreConfigVersions(accessToken),
+        getDatabases(accessToken),
+        getStorageHosts(accessToken),
+      ]);
+
+      setBackups(backupRows);
+      setRestoreJobs(restoreRows);
+      setConfigs(configRows);
+      setConfigVersions(configVersionRows);
+      setReplicationPolicyVersions(policyVersionRows);
+      setRestoreConfigVersions(restoreVersionRows);
+      setDatabases(databaseRows);
+      setStorageHosts(hostRows);
+    } catch {
+      setError("Unable to load planned events.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void loadPlannerData();
   }, [accessToken]);
 
   const dayStatusMap = useMemo(() => {
@@ -326,7 +642,7 @@ export function PlannedEventsPage() {
     const firstWeekday = toConfigWeekday(new Date(year, month, 1).getDay());
 
     const days: Array<Date | null> = [];
-    for (let i = 0; i < firstWeekday; i += 1) {
+    for (let index = 0; index < firstWeekday; index += 1) {
       days.push(null);
     }
     for (let day = 1; day <= daysInMonth; day += 1) {
@@ -340,8 +656,6 @@ export function PlannedEventsPage() {
 
   const daySummaryMap = useMemo(() => {
     const result = new Map<string, DaySummary>();
-
-    const monthStart = new Date(monthCursor.getFullYear(), monthCursor.getMonth(), 1);
     const monthEnd = new Date(monthCursor.getFullYear(), monthCursor.getMonth() + 1, 0);
 
     for (let day = 1; day <= monthEnd.getDate(); day += 1) {
@@ -371,12 +685,10 @@ export function PlannedEventsPage() {
       for (const restoreVersion of activeRestoreVersions) {
         const targetDb = dbById.get(restoreVersion.target_database);
         if (!targetDb?.is_active) continue;
-        const times = restoreTimesForDay(restoreVersion, weekday);
-        restoresPlanned += times.length;
+        restoresPlanned += restoreTimesForDay(restoreVersion, weekday).length;
       }
 
-      const key = dayKey(date);
-      result.set(key, {
+      result.set(dayKey(date), {
         date,
         backups: backupsPlanned,
         replications: replicationsPlanned,
@@ -384,36 +696,26 @@ export function PlannedEventsPage() {
       });
     }
 
-    for (const [key, value] of [...result.entries()]) {
-      if (value.date < monthStart || value.date > monthEnd) {
-        result.delete(key);
-      }
-    }
-
     return result;
   }, [monthCursor, configVersions, replicationPolicyVersions, restoreConfigVersions, dbById]);
 
-  const selectedDaySummary = useMemo(() => {
-    if (!selectedDate) return null;
-    return daySummaryMap.get(dayKey(selectedDate)) ?? null;
-  }, [selectedDate, daySummaryMap]);
-
   const selectedDayEvents = useMemo(() => {
-    if (!selectedDate) return { backup: [], restore: [], replication: [] } as Record<PlannedEventType, PlannedEvent[]>;
-    const weekday = toConfigWeekday(selectedDate.getDay());
+    if (!selectedDate) return emptyEventGroups();
 
-    const events: Record<PlannedEventType, PlannedEvent[]> = { backup: [], restore: [], replication: [] };
+    const weekday = toConfigWeekday(selectedDate.getDay());
+    const groups = emptyEventGroups();
     const activeBackupVersionByConfig = new Map<number, DatabaseConfigVersion>();
     const backupTimesByConfig = new Map<number, number[]>();
 
     for (const configVersion of configVersions.filter((version) => isVersionActiveOnDate(version, selectedDate))) {
       activeBackupVersionByConfig.set(configVersion.database_config, configVersion);
-      const db = dbById.get(configVersion.database);
-      const dbName = db ? `${db.name} (${db.db_type})` : `Config ${configVersion.database_config}`;
+      const database = dbById.get(configVersion.database);
+      const dbName = database ? `${database.name} (${database.db_type})` : `Config ${configVersion.database_config}`;
       const times = backupTimesForDay(configVersion, weekday);
       backupTimesByConfig.set(configVersion.database_config, times);
       for (const minuteOfDay of times) {
-        events.backup.push({ type: "backup", minuteOfDay, label: `${dbName} backup`, dbName });
+        const target = configVersion.is_one_time_event ? groups.oneTime.backup : groups.scheduled.backup;
+        target.push({ type: "backup", minuteOfDay, label: `${dbName} backup`, dbName, isOneTime: configVersion.is_one_time_event });
       }
     }
 
@@ -425,7 +727,15 @@ export function PlannedEventsPage() {
       const sourceBackupTimes = backupTimesByConfig.get(policyVersion.database_config) ?? [];
       const times = replicationTimesForDay(policyVersion, weekday, sourceBackupTimes);
       for (const minuteOfDay of times) {
-        events.replication.push({ type: "replication", minuteOfDay, label: `${sourceName} → ${hostName}`, dbName: sourceName, targetName: hostName });
+        const target = policyVersion.is_one_time_event ? groups.oneTime.replication : groups.scheduled.replication;
+        target.push({
+          type: "replication",
+          minuteOfDay,
+          label: `${sourceName} → ${hostName}`,
+          dbName: sourceName,
+          targetName: hostName,
+          isOneTime: policyVersion.is_one_time_event,
+        });
       }
     }
 
@@ -438,33 +748,43 @@ export function PlannedEventsPage() {
       const targetName = `${targetDb.name} (${targetDb.db_type})`;
       const times = restoreTimesForDay(restoreVersion, weekday);
       for (const minuteOfDay of times) {
-        events.restore.push({ type: "restore", minuteOfDay, label: `${sourceName} → ${targetName}`, dbName: sourceName, targetName });
+        const target = restoreVersion.is_one_time_event ? groups.oneTime.restore : groups.scheduled.restore;
+        target.push({
+          type: "restore",
+          minuteOfDay,
+          label: `${sourceName} → ${targetName}`,
+          dbName: sourceName,
+          targetName,
+          isOneTime: restoreVersion.is_one_time_event,
+        });
       }
     }
 
-    events.backup.sort((a, b) => a.minuteOfDay - b.minuteOfDay);
-    events.restore.sort((a, b) => a.minuteOfDay - b.minuteOfDay);
-    events.replication.sort((a, b) => a.minuteOfDay - b.minuteOfDay);
+    for (const eventType of ["backup", "restore", "replication"] as PlannedEventType[]) {
+      groups.scheduled[eventType].sort((left, right) => left.minuteOfDay - right.minuteOfDay);
+      groups.oneTime[eventType].sort((left, right) => left.minuteOfDay - right.minuteOfDay);
+    }
 
-    return events;
+    return groups;
   }, [selectedDate, configVersions, replicationPolicyVersions, restoreConfigVersions, dbById, hostById]);
+
+  const selectedDayOneTimeCount =
+    selectedDayEvents.oneTime.backup.length
+    + selectedDayEvents.oneTime.restore.length
+    + selectedDayEvents.oneTime.replication.length;
 
   const todayStart = startOfDay(new Date());
   const today = new Date();
   const todayKey = dayKey(today);
 
-  /* --- Calendar View ---------------------------------------------------- */
   if (!selectedDate) {
     return (
       <Section label="planner" title="Planned Events">
-        {/* Month / Year navigation */}
         <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-border bg-gradient-to-r from-white to-muted/40 p-4 shadow-soft">
           <button
             type="button"
             className="flex h-9 w-9 items-center justify-center rounded-xl border border-border bg-white text-foreground shadow-sm transition hover:bg-muted"
-            onClick={() => {
-              setMonthCursor((prev) => new Date(prev.getFullYear(), prev.getMonth() - 1, 1));
-            }}
+            onClick={() => setMonthCursor((prev) => new Date(prev.getFullYear(), prev.getMonth() - 1, 1))}
           >
             ‹
           </button>
@@ -472,23 +792,17 @@ export function PlannedEventsPage() {
           <select
             className="h-9 rounded-xl border border-border bg-white px-3 text-sm font-medium shadow-sm focus:outline-none focus:ring-2 focus:ring-accent/40"
             value={monthCursor.getMonth()}
-            onChange={(e) => {
-              const month = Number(e.target.value);
-              setMonthCursor((prev) => new Date(prev.getFullYear(), month, 1));
-            }}
+            onChange={(event) => setMonthCursor((prev) => new Date(prev.getFullYear(), Number(event.target.value), 1))}
           >
-            {MONTH_OPTIONS.map((month, idx) => (
-              <option key={month} value={idx}>{month}</option>
+            {MONTH_OPTIONS.map((month, index) => (
+              <option key={month} value={index}>{month}</option>
             ))}
           </select>
 
           <select
             className="h-9 rounded-xl border border-border bg-white px-3 text-sm font-medium shadow-sm focus:outline-none focus:ring-2 focus:ring-accent/40"
             value={monthCursor.getFullYear()}
-            onChange={(e) => {
-              const year = Number(e.target.value);
-              setMonthCursor((prev) => new Date(year, prev.getMonth(), 1));
-            }}
+            onChange={(event) => setMonthCursor((prev) => new Date(Number(event.target.value), prev.getMonth(), 1))}
           >
             {yearOptions.map((year) => (
               <option key={year} value={year}>{year}</option>
@@ -498,25 +812,18 @@ export function PlannedEventsPage() {
           <button
             type="button"
             className="flex h-9 w-9 items-center justify-center rounded-xl border border-border bg-white text-foreground shadow-sm transition hover:bg-muted"
-            onClick={() => {
-              setMonthCursor((prev) => new Date(prev.getFullYear(), prev.getMonth() + 1, 1));
-            }}
+            onClick={() => setMonthCursor((prev) => new Date(prev.getFullYear(), prev.getMonth() + 1, 1))}
           >
             ›
           </button>
 
-          <Button
-            size="sm"
-            variant="secondary"
-            onClick={() => {
-              const now = new Date();
-              setMonthCursor(new Date(now.getFullYear(), now.getMonth(), 1));
-            }}
-          >
+          <Button size="sm" variant="secondary" onClick={() => {
+            const now = new Date();
+            setMonthCursor(new Date(now.getFullYear(), now.getMonth(), 1));
+          }}>
             Today
           </Button>
 
-          {/* Legend */}
           <div className="ml-auto flex items-center gap-4 text-xs text-muted-foreground">
             <span className="flex items-center gap-1"><span className={`inline-block h-2.5 w-2.5 rounded-full ${EVENT_COLORS.backup.dot}`} /> Backups</span>
             <span className="flex items-center gap-1"><span className={`inline-block h-2.5 w-2.5 rounded-full ${EVENT_COLORS.restore.dot}`} /> Restorations</span>
@@ -527,18 +834,15 @@ export function PlannedEventsPage() {
         {loading && <p className="text-sm text-muted-foreground">Loading planned events…</p>}
         {error && <p className="text-sm text-failure">{error}</p>}
 
-        {/* Calendar grid */}
         <div className="overflow-hidden rounded-2xl border border-border bg-white shadow-soft">
-          {/* Weekday header row */}
           <div className="grid grid-cols-7 border-b border-border bg-gradient-to-r from-slate-50 to-slate-100">
-            {WEEKDAY_HEADERS.map((day, i) => (
-              <p key={day} className={`py-3 text-center text-xs font-bold uppercase tracking-widest ${i >= 5 ? "text-muted-foreground/60" : "text-muted-foreground"}`}>
+            {WEEKDAY_HEADERS.map((day, index) => (
+              <p key={day} className={`py-3 text-center text-xs font-bold uppercase tracking-widest ${index >= 5 ? "text-muted-foreground/60" : "text-muted-foreground"}`}>
                 {day}
               </p>
             ))}
           </div>
 
-          {/* Day cells */}
           <div className="grid grid-cols-7">
             {monthDays.map((date, index) => {
               if (!date) {
@@ -568,25 +872,19 @@ export function PlannedEventsPage() {
                         : "bg-white hover:bg-blue-50/30"
                   }`}
                 >
-                  {/* Day number + status */}
                   <div className="flex items-center justify-between">
-                    <span
-                      className={`flex h-7 w-7 items-center justify-center rounded-full text-sm font-semibold transition-colors ${
-                        isToday
-                          ? "bg-accent text-white"
-                          : isPast
-                            ? "text-muted-foreground/60"
-                            : "text-foreground group-hover:bg-accent/10 group-hover:text-accent"
-                      }`}
-                    >
+                    <span className={`flex h-7 w-7 items-center justify-center rounded-full text-sm font-semibold transition-colors ${
+                      isToday
+                        ? "bg-accent text-white"
+                        : isPast
+                          ? "text-muted-foreground/60"
+                          : "text-foreground group-hover:bg-accent/10 group-hover:text-accent"
+                    }`}>
                       {date.getDate()}
                     </span>
-                    {showStatusDot && (
-                      <span className={`h-2 w-2 rounded-full ${hasFailure ? "bg-failure animate-pulse" : "bg-success"}`} />
-                    )}
+                    {showStatusDot && <span className={`h-2 w-2 rounded-full ${hasFailure ? "bg-failure animate-pulse" : "bg-success"}`} />}
                   </div>
 
-                  {/* Event indicator chips */}
                   {totalEvents > 0 && (
                     <div className="mt-1.5 flex flex-wrap gap-1">
                       {(summary?.backups ?? 0) > 0 && (
@@ -610,7 +908,6 @@ export function PlannedEventsPage() {
                     </div>
                   )}
 
-                  {/* Activity bar at bottom */}
                   {totalEvents > 0 && (
                     <div className="absolute bottom-0 left-0 right-0 flex h-1">
                       {(summary?.backups ?? 0) > 0 && <div className={`flex-1 ${EVENT_COLORS.backup.dot} opacity-40`} />}
@@ -627,23 +924,17 @@ export function PlannedEventsPage() {
     );
   }
 
-  /* --- Kanban Day Detail View ------------------------------------------- */
   const weekdayName = WEEKDAY_FULL[toConfigWeekday(selectedDate.getDay())];
 
   return (
     <Section label="planner" title="Planned Events">
-      {/* Back button + day header */}
       <motion.div
         initial={{ opacity: 0, y: -10 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.3 }}
         className="flex flex-wrap items-center gap-4 rounded-2xl border border-border bg-gradient-to-r from-white to-muted/40 p-4 shadow-soft"
       >
-        <Button
-          size="sm"
-          variant="secondary"
-          onClick={() => setSelectedDate(null)}
-        >
+        <Button size="sm" variant="secondary" onClick={() => setSelectedDate(null)}>
           ← Back to Calendar
         </Button>
 
@@ -652,25 +943,24 @@ export function PlannedEventsPage() {
             {weekdayName}, {MONTH_OPTIONS[selectedDate.getMonth()]} {selectedDate.getDate()}, {selectedDate.getFullYear()}
           </h3>
           <p className="mt-0.5 text-xs text-muted-foreground">
-            {selectedDaySummary?.backups ?? 0} backups · {selectedDaySummary?.restores ?? 0} restorations · {selectedDaySummary?.replications ?? 0} replications
+            {selectedDayEvents.scheduled.backup.length} scheduled backups · {selectedDayEvents.scheduled.restore.length} scheduled restorations · {selectedDayEvents.scheduled.replication.length} scheduled replications
+            {selectedDayOneTimeCount > 0 ? ` · ${selectedDayOneTimeCount} one-time entries` : ""}
           </p>
         </div>
 
-        {/* Summary badges */}
         <div className="flex items-center gap-2">
           <span className={`rounded-full px-3 py-1 text-xs font-bold ${EVENT_COLORS.backup.badge}`}>
-            {selectedDayEvents.backup.length} Backups
+            {selectedDayEvents.scheduled.backup.length + selectedDayEvents.oneTime.backup.length} Backups
           </span>
           <span className={`rounded-full px-3 py-1 text-xs font-bold ${EVENT_COLORS.restore.badge}`}>
-            {selectedDayEvents.restore.length} Restorations
+            {selectedDayEvents.scheduled.restore.length + selectedDayEvents.oneTime.restore.length} Restorations
           </span>
           <span className={`rounded-full px-3 py-1 text-xs font-bold ${EVENT_COLORS.replication.badge}`}>
-            {selectedDayEvents.replication.length} Replications
+            {selectedDayEvents.scheduled.replication.length + selectedDayEvents.oneTime.replication.length} Replications
           </span>
         </div>
       </motion.div>
 
-      {/* Kanban columns */}
       <motion.div
         initial={{ opacity: 0, y: 16 }}
         animate={{ opacity: 1, y: 0 }}
@@ -680,7 +970,9 @@ export function PlannedEventsPage() {
         <KanbanColumn
           title="Backups"
           type="backup"
-          events={selectedDayEvents.backup}
+          scheduledEvents={selectedDayEvents.scheduled.backup}
+          oneTimeEvents={selectedDayEvents.oneTime.backup}
+          onAddEvent={() => setAddModalType("backup")}
           icon={
             <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 7v10c0 2 1 3 3 3h10c2 0 3-1 3-3V7M4 7c0-2 1-3 3-3h10c2 0 3 1 3 3M4 7h16M8 11h.01M12 11h.01M16 11h.01" />
@@ -690,7 +982,9 @@ export function PlannedEventsPage() {
         <KanbanColumn
           title="Restorations"
           type="restore"
-          events={selectedDayEvents.restore}
+          scheduledEvents={selectedDayEvents.scheduled.restore}
+          oneTimeEvents={selectedDayEvents.oneTime.restore}
+          onAddEvent={() => setAddModalType("restore")}
           icon={
             <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
@@ -700,7 +994,9 @@ export function PlannedEventsPage() {
         <KanbanColumn
           title="Replications"
           type="replication"
-          events={selectedDayEvents.replication}
+          scheduledEvents={selectedDayEvents.scheduled.replication}
+          oneTimeEvents={selectedDayEvents.oneTime.replication}
+          onAddEvent={() => setAddModalType("replication")}
           icon={
             <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
@@ -708,6 +1004,21 @@ export function PlannedEventsPage() {
           }
         />
       </motion.div>
+
+      {selectedDate && addModalType && accessToken && (
+        <AddEventModal
+          open
+          type={addModalType}
+          selectedDate={selectedDate}
+          accessToken={accessToken}
+          databases={databases}
+          configs={configs}
+          storageHosts={storageHosts}
+          dbById={dbById}
+          onClose={() => setAddModalType(null)}
+          onCreated={loadPlannerData}
+        />
+      )}
     </Section>
   );
 }

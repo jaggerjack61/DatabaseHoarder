@@ -1,3 +1,5 @@
+from datetime import datetime, time, timedelta
+
 from rest_framework import serializers
 from django.utils import timezone
 
@@ -14,6 +16,27 @@ from .models import (
     SqliteLocation,
     StorageHost,
 )
+
+
+def _resolve_effective_window(schedule_for_date):
+    if schedule_for_date is None:
+        return timezone.now(), None
+
+    current_timezone = timezone.get_current_timezone()
+    start = timezone.make_aware(datetime.combine(schedule_for_date, time.min), current_timezone)
+    return start, start + timedelta(days=1)
+
+
+def _validate_one_time_schedule(attrs):
+    schedule_for_date = attrs.get("schedule_for_date")
+    is_one_time_event = attrs.get("is_one_time_event", False)
+
+    if schedule_for_date is not None and not is_one_time_event:
+        raise serializers.ValidationError("schedule_for_date requires is_one_time_event=true.")
+    if is_one_time_event and schedule_for_date is None:
+        raise serializers.ValidationError("schedule_for_date is required for one-time events.")
+    if schedule_for_date is not None and schedule_for_date < timezone.localdate():
+        raise serializers.ValidationError("One-time events cannot be scheduled in the past.")
 
 
 class StorageHostSerializer(serializers.ModelSerializer):
@@ -131,6 +154,9 @@ class DatabaseSerializer(serializers.ModelSerializer):
 
 
 class DatabaseConfigSerializer(serializers.ModelSerializer):
+    schedule_for_date = serializers.DateField(write_only=True, required=False)
+    is_one_time_event = serializers.BooleanField(required=False, default=False)
+
     class Meta:
         model = DatabaseConfig
         fields = (
@@ -143,14 +169,17 @@ class DatabaseConfigSerializer(serializers.ModelSerializer):
             "retention_keep_weekly_day",
             "retention_exception_days",
             "retention_exception_max_days",
+            "schedule_for_date",
             "last_backup_at",
             "enabled",
+            "is_one_time_event",
             "created_at",
             "updated_at",
         )
         read_only_fields = ("id", "last_backup_at", "created_at", "updated_at")
 
     def validate(self, attrs):
+        _validate_one_time_schedule(attrs)
         backup_frequency = attrs.get("backup_frequency_minutes")
         backup_days = attrs.get("backup_days_of_week")
         if backup_frequency == 0 and not backup_days:
@@ -165,7 +194,8 @@ class DatabaseConfigSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Cannot create config for a database you cannot access.")
         return value
 
-    def _roll_version(self, instance: DatabaseConfig):
+    def _roll_version(self, instance: DatabaseConfig, schedule_for_date=None):
+        effective_from, effective_to = _resolve_effective_window(schedule_for_date)
         now = timezone.now()
         DatabaseConfigVersion.objects.filter(database_config=instance, effective_to__isnull=True).update(effective_to=now)
         DatabaseConfigVersion.objects.create(
@@ -179,15 +209,19 @@ class DatabaseConfigSerializer(serializers.ModelSerializer):
             retention_exception_days=instance.retention_exception_days,
             retention_exception_max_days=instance.retention_exception_max_days,
             enabled=instance.enabled,
-            effective_from=now,
+            effective_from=effective_from,
+            effective_to=effective_to,
         )
 
     def create(self, validated_data):
-        instance = super().create(validated_data)
-        self._roll_version(instance)
+        schedule_for_date = validated_data.pop("schedule_for_date", None)
+        is_one_time_event = validated_data.pop("is_one_time_event", False)
+        instance = super().create({**validated_data, "is_one_time_event": is_one_time_event})
+        self._roll_version(instance, schedule_for_date=schedule_for_date)
         return instance
 
     def update(self, instance, validated_data):
+        validated_data.pop("schedule_for_date", None)
         tracked_fields = {
             "database",
             "backup_frequency_minutes",
@@ -198,6 +232,7 @@ class DatabaseConfigSerializer(serializers.ModelSerializer):
             "retention_exception_days",
             "retention_exception_max_days",
             "enabled",
+            "is_one_time_event",
         }
         should_roll = any(field in validated_data for field in tracked_fields)
         instance = super().update(instance, validated_data)
@@ -207,6 +242,9 @@ class DatabaseConfigSerializer(serializers.ModelSerializer):
 
 
 class ReplicationPolicySerializer(serializers.ModelSerializer):
+    schedule_for_date = serializers.DateField(write_only=True, required=False)
+    is_one_time_event = serializers.BooleanField(required=False, default=False)
+
     class Meta:
         model = ReplicationPolicy
         fields = (
@@ -221,12 +259,15 @@ class ReplicationPolicySerializer(serializers.ModelSerializer):
             "replication_retention_days",
             "replication_retention_exception_days",
             "replication_retention_exception_max_days",
+            "schedule_for_date",
             "created_at",
             "updated_at",
+            "is_one_time_event",
         )
         read_only_fields = ("id", "last_replicated_at", "created_at", "updated_at")
 
     def validate(self, attrs):
+        _validate_one_time_schedule(attrs)
         user = self.context["request"].user
         replication_frequency = attrs.get(
             "replication_frequency_minutes",
@@ -249,7 +290,8 @@ class ReplicationPolicySerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError("Cannot replicate to a storage host you cannot access.")
         return attrs
 
-    def _roll_version(self, instance: ReplicationPolicy):
+    def _roll_version(self, instance: ReplicationPolicy, schedule_for_date=None):
+        effective_from, effective_to = _resolve_effective_window(schedule_for_date)
         now = timezone.now()
         ReplicationPolicyVersion.objects.filter(replication_policy=instance, effective_to__isnull=True).update(effective_to=now)
         ReplicationPolicyVersion.objects.create(
@@ -263,15 +305,19 @@ class ReplicationPolicySerializer(serializers.ModelSerializer):
             replication_retention_days=instance.replication_retention_days,
             replication_retention_exception_days=instance.replication_retention_exception_days,
             replication_retention_exception_max_days=instance.replication_retention_exception_max_days,
-            effective_from=now,
+            effective_from=effective_from,
+            effective_to=effective_to,
         )
 
     def create(self, validated_data):
-        instance = super().create(validated_data)
-        self._roll_version(instance)
+        schedule_for_date = validated_data.pop("schedule_for_date", None)
+        is_one_time_event = validated_data.pop("is_one_time_event", False)
+        instance = super().create({**validated_data, "is_one_time_event": is_one_time_event})
+        self._roll_version(instance, schedule_for_date=schedule_for_date)
         return instance
 
     def update(self, instance, validated_data):
+        validated_data.pop("schedule_for_date", None)
         tracked_fields = {
             "database_config",
             "storage_host",
@@ -282,6 +328,7 @@ class ReplicationPolicySerializer(serializers.ModelSerializer):
             "replication_retention_days",
             "replication_retention_exception_days",
             "replication_retention_exception_max_days",
+            "is_one_time_event",
         }
         should_roll = any(field in validated_data for field in tracked_fields)
         instance = super().update(instance, validated_data)
@@ -291,6 +338,9 @@ class ReplicationPolicySerializer(serializers.ModelSerializer):
 
 
 class RestoreConfigSerializer(serializers.ModelSerializer):
+    schedule_for_date = serializers.DateField(write_only=True, required=False)
+    is_one_time_event = serializers.BooleanField(required=False, default=False)
+
     class Meta:
         model = RestoreConfig
         fields = (
@@ -300,14 +350,17 @@ class RestoreConfigSerializer(serializers.ModelSerializer):
             "restore_frequency_minutes",
             "restore_days_of_week",
             "drop_target_on_success",
+            "schedule_for_date",
             "last_restored_at",
             "enabled",
+            "is_one_time_event",
             "created_at",
             "updated_at",
         )
         read_only_fields = ("id", "last_restored_at", "created_at", "updated_at")
 
     def validate(self, attrs):
+        _validate_one_time_schedule(attrs)
         user = self.context["request"].user
         restore_frequency = attrs.get(
             "restore_frequency_minutes",
@@ -343,7 +396,8 @@ class RestoreConfigSerializer(serializers.ModelSerializer):
 
         return attrs
 
-    def _roll_version(self, instance: RestoreConfig):
+    def _roll_version(self, instance: RestoreConfig, schedule_for_date=None):
+        effective_from, effective_to = _resolve_effective_window(schedule_for_date)
         now = timezone.now()
         RestoreConfigVersion.objects.filter(restore_config=instance, effective_to__isnull=True).update(effective_to=now)
         RestoreConfigVersion.objects.create(
@@ -354,15 +408,19 @@ class RestoreConfigSerializer(serializers.ModelSerializer):
             restore_days_of_week=instance.restore_days_of_week,
             drop_target_on_success=instance.drop_target_on_success,
             enabled=instance.enabled,
-            effective_from=now,
+            effective_from=effective_from,
+            effective_to=effective_to,
         )
 
     def create(self, validated_data):
-        instance = super().create(validated_data)
-        self._roll_version(instance)
+        schedule_for_date = validated_data.pop("schedule_for_date", None)
+        is_one_time_event = validated_data.pop("is_one_time_event", False)
+        instance = super().create({**validated_data, "is_one_time_event": is_one_time_event})
+        self._roll_version(instance, schedule_for_date=schedule_for_date)
         return instance
 
     def update(self, instance, validated_data):
+        validated_data.pop("schedule_for_date", None)
         tracked_fields = {
             "source_config",
             "target_database",
@@ -370,6 +428,7 @@ class RestoreConfigSerializer(serializers.ModelSerializer):
             "restore_days_of_week",
             "drop_target_on_success",
             "enabled",
+            "is_one_time_event",
         }
         should_roll = any(field in validated_data for field in tracked_fields)
         instance = super().update(instance, validated_data)
@@ -379,6 +438,8 @@ class RestoreConfigSerializer(serializers.ModelSerializer):
 
 
 class DatabaseConfigVersionSerializer(serializers.ModelSerializer):
+    is_one_time_event = serializers.BooleanField(source="database_config.is_one_time_event", read_only=True)
+
     class Meta:
         model = DatabaseConfigVersion
         fields = (
@@ -395,12 +456,15 @@ class DatabaseConfigVersionSerializer(serializers.ModelSerializer):
             "enabled",
             "effective_from",
             "effective_to",
+            "is_one_time_event",
             "created_at",
         )
         read_only_fields = fields
 
 
 class ReplicationPolicyVersionSerializer(serializers.ModelSerializer):
+    is_one_time_event = serializers.BooleanField(source="replication_policy.is_one_time_event", read_only=True)
+
     class Meta:
         model = ReplicationPolicyVersion
         fields = (
@@ -417,12 +481,15 @@ class ReplicationPolicyVersionSerializer(serializers.ModelSerializer):
             "replication_retention_exception_max_days",
             "effective_from",
             "effective_to",
+            "is_one_time_event",
             "created_at",
         )
         read_only_fields = fields
 
 
 class RestoreConfigVersionSerializer(serializers.ModelSerializer):
+    is_one_time_event = serializers.BooleanField(source="restore_config.is_one_time_event", read_only=True)
+
     class Meta:
         model = RestoreConfigVersion
         fields = (
@@ -436,6 +503,7 @@ class RestoreConfigVersionSerializer(serializers.ModelSerializer):
             "enabled",
             "effective_from",
             "effective_to",
+            "is_one_time_event",
             "created_at",
         )
         read_only_fields = fields

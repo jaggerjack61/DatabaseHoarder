@@ -32,9 +32,12 @@ import {
   deleteRestoreConfig,
   deleteStorageHost,
   getConfigs,
+  getConfigVersions,
   getDatabases,
   getReplicationPolicies,
+  getReplicationPolicyVersions,
   getRestoreConfigs,
+  getRestoreConfigVersions,
   getSiteSettings,
   getStorageHosts,
   testDatabaseConnection,
@@ -42,6 +45,8 @@ import {
   testStorageHostConnection,
   testStorageHostConnectionByPayload,
   updateDatabase,
+  updateConfig,
+  updateReplicationPolicy,
   updateRestoreConfig,
   updateStorageHost,
 } from "@/lib/api";
@@ -53,8 +58,11 @@ import {
   Database,
   StorageHost,
   ReplicationPolicy,
+  ReplicationPolicyVersion,
   RestoreConfig,
+  RestoreConfigVersion,
   SqliteLocation,
+  DatabaseConfigVersion,
 } from "@/types/api";
 
 type TabId = "storage-hosts" | "databases" | "configs" | "restore" | "replication";
@@ -112,8 +120,16 @@ export function HostsPage() {
   const [storageHosts, setStorageHosts] = useState<StorageHost[]>([]);
   const [databases, setDatabases] = useState<Database[]>([]);
   const [configs, setConfigs] = useState<DatabaseConfig[]>([]);
+  const [configVersions, setConfigVersions] = useState<DatabaseConfigVersion[]>([]);
   const [restoreConfigs, setRestoreConfigs] = useState<RestoreConfig[]>([]);
+  const [restoreConfigVersions, setRestoreConfigVersions] = useState<RestoreConfigVersion[]>([]);
   const [policies, setPolicies] = useState<ReplicationPolicy[]>([]);
+  const [policyVersions, setPolicyVersions] = useState<ReplicationPolicyVersion[]>([]);
+  const [historyViewer, setHistoryViewer] = useState<{
+    type: "backup" | "restore" | "replication";
+    id: number;
+    title: string;
+  } | null>(null);
 
   // Modal state
   const [openStorageHost, setOpenStorageHost] = useState(false);
@@ -125,7 +141,9 @@ export function HostsPage() {
   // Edit state
   const [editingStorageHost, setEditingStorageHost] = useState<StorageHost | null>(null);
   const [editingDatabase, setEditingDatabase] = useState<Database | null>(null);
+  const [editingConfig, setEditingConfig] = useState<DatabaseConfig | null>(null);
   const [editingRestoreConfig, setEditingRestoreConfig] = useState<RestoreConfig | null>(null);
+  const [editingPolicy, setEditingPolicy] = useState<ReplicationPolicy | null>(null);
   const [editStorageHostForm, setEditStorageHostForm] = useState({ name: "", address: "", ssh_port: 22, username: "", password: "" });
   const [editDatabaseForm, setEditDatabaseForm] = useState({
     name: "",
@@ -198,6 +216,33 @@ export function HostsPage() {
     drop_target_on_success: false,
     enabled: true,
   });
+  const [editConfigForm, setEditConfigForm] = useState({
+    database: 0,
+    frequencyValue: 1,
+    frequencyUnit: "hours" as FreqUnit,
+    retention_days: 7,
+    backup_days_of_week: [] as number[],
+    retention_keep_monthly_first: false,
+    retention_keep_weekly_day: null as number | null,
+    retention_exception_days: null as number | null,
+    retention_exception_max_days: null as number | null,
+    enabled: true,
+  });
+  const [editConfigTab, setEditConfigTab] = useState<"database" | "schedule" | "retention">("database");
+  const [editPolicyForm, setEditPolicyForm] = useState({
+    database_config: 0,
+    storage_host: 0,
+    remote_path: "/backups",
+    hasIndependentSchedule: false,
+    replicationFreqValue: 1,
+    replicationFreqUnit: "days" as FreqUnit,
+    replication_days_of_week: [] as number[],
+    replication_retention_days: null as number | null,
+    replication_retention_exception_days: null as number | null,
+    replication_retention_exception_max_days: null as number | null,
+    enabled: true,
+  });
+  const [editPolicyTab, setEditPolicyTab] = useState<"targets" | "schedule" | "retention">("targets");
 
   // Policy form — includes independent schedule / separate retention helpers
   const [policyForm, setPolicyForm] = useState({
@@ -220,41 +265,71 @@ export function HostsPage() {
   const dbById = useMemo(() => new Map(databases.map((d) => [d.id, d])), [databases]);
   const configById = useMemo(() => new Map(configs.map((c) => [c.id, c])), [configs]);
   const storageHostById = useMemo(() => new Map(storageHosts.map((h) => [h.id, h])), [storageHosts]);
+  const configVersionCountByConfigId = useMemo(() => {
+    const counts = new Map<number, number>();
+    for (const version of configVersions) {
+      counts.set(version.database_config, (counts.get(version.database_config) ?? 0) + 1);
+    }
+    return counts;
+  }, [configVersions]);
+  const restoreVersionCountByConfigId = useMemo(() => {
+    const counts = new Map<number, number>();
+    for (const version of restoreConfigVersions) {
+      counts.set(version.restore_config, (counts.get(version.restore_config) ?? 0) + 1);
+    }
+    return counts;
+  }, [restoreConfigVersions]);
+  const policyVersionCountByConfigId = useMemo(() => {
+    const counts = new Map<number, number>();
+    for (const version of policyVersions) {
+      counts.set(version.replication_policy, (counts.get(version.replication_policy) ?? 0) + 1);
+    }
+    return counts;
+  }, [policyVersions]);
 
   const loadData = async () => {
     if (!accessToken) return;
     setLoading(true);
     setError(null);
     try {
-      const [shResult, dbResult, cfResult, rcResult, rpResult] = await Promise.allSettled([
+      const [shResult, dbResult, cfResult, cfVersionsResult, rcResult, rcVersionsResult, rpResult, rpVersionsResult] = await Promise.allSettled([
         getStorageHosts(accessToken),
         getDatabases(accessToken),
         getConfigs(accessToken),
+        getConfigVersions(accessToken),
         getRestoreConfigs(accessToken),
+        getRestoreConfigVersions(accessToken),
         getReplicationPolicies(accessToken),
+        getReplicationPolicyVersions(accessToken),
       ]);
 
       const sh = shResult.status === "fulfilled" ? shResult.value : [];
       const db = dbResult.status === "fulfilled" ? dbResult.value : [];
       const cf = cfResult.status === "fulfilled" ? cfResult.value : [];
+      const cfVersions = cfVersionsResult.status === "fulfilled" ? cfVersionsResult.value : [];
       const rc = rcResult.status === "fulfilled" ? rcResult.value : [];
+      const rcVersions = rcVersionsResult.status === "fulfilled" ? rcVersionsResult.value : [];
       const rp = rpResult.status === "fulfilled" ? rpResult.value : [];
+      const rpVersions = rpVersionsResult.status === "fulfilled" ? rpVersionsResult.value : [];
 
       setStorageHosts(sh);
       setDatabases(db);
       setConfigs(cf);
+      setConfigVersions(cfVersions);
       setRestoreConfigs(rc);
+      setRestoreConfigVersions(rcVersions);
       setPolicies(rp);
+      setPolicyVersions(rpVersions);
       if (db.length > 0 && configForm.database === 0) setConfigForm((p) => ({ ...p, database: db[0].id }));
       if (cf.length > 0 && restoreForm.source_config === 0) setRestoreForm((p) => ({ ...p, source_config: cf[0].id }));
       if (db.length > 0 && restoreForm.target_database === 0) setRestoreForm((p) => ({ ...p, target_database: db[0].id }));
       if (cf.length > 0 && policyForm.database_config === 0) setPolicyForm((p) => ({ ...p, database_config: cf[0].id }));
       if (sh.length > 0 && policyForm.storage_host === 0) setPolicyForm((p) => ({ ...p, storage_host: sh[0].id }));
 
-      const coreFailed = [shResult, dbResult, cfResult, rpResult].some((r) => r.status === "rejected");
+      const coreFailed = [shResult, dbResult, cfResult, cfVersionsResult, rpResult, rpVersionsResult].some((r) => r.status === "rejected");
       if (coreFailed) {
         setError("Unable to load some host data.");
-      } else if (rcResult.status === "rejected") {
+      } else if (rcResult.status === "rejected" || rcVersionsResult.status === "rejected") {
         setError("Restore configs are temporarily unavailable.");
       }
     } catch {
@@ -334,6 +409,61 @@ export function HostsPage() {
       setOpenConfig(false);
       await loadData();
     } catch { setError("Failed to create backup config."); }
+  };
+
+  const openEditConfig = (config: DatabaseConfig) => {
+    const freq = minutesToFreq(config.backup_frequency_minutes);
+    setEditConfigForm({
+      database: config.database,
+      frequencyValue: Math.max(0, freq.value),
+      frequencyUnit: freq.unit,
+      retention_days: config.retention_days,
+      backup_days_of_week: config.backup_days_of_week || [],
+      retention_keep_monthly_first: config.retention_keep_monthly_first,
+      retention_keep_weekly_day: config.retention_keep_weekly_day,
+      retention_exception_days: config.retention_exception_days,
+      retention_exception_max_days: config.retention_exception_max_days,
+      enabled: config.enabled,
+    });
+    setEditConfigTab("database");
+    setEditingConfig(config);
+  };
+
+  const submitEditConfig = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!accessToken || !editingConfig || !editConfigForm.database) return;
+    try {
+      const frequencyMinutes = freqToMinutes(editConfigForm.frequencyValue, editConfigForm.frequencyUnit);
+      if (frequencyMinutes === 0 && editConfigForm.backup_days_of_week.length === 0) {
+        setError("Select at least one weekday or set a backup interval greater than 0.");
+        return;
+      }
+      await updateConfig(accessToken, editingConfig.id, {
+        database: editConfigForm.database,
+        backup_frequency_minutes: frequencyMinutes,
+        retention_days: editConfigForm.retention_days,
+        backup_days_of_week: editConfigForm.backup_days_of_week,
+        retention_keep_monthly_first: editConfigForm.retention_keep_monthly_first,
+        retention_keep_weekly_day: editConfigForm.retention_keep_weekly_day,
+        retention_exception_days: editConfigForm.retention_exception_days,
+        retention_exception_max_days: editConfigForm.retention_exception_max_days,
+        enabled: editConfigForm.enabled,
+      });
+      setEditingConfig(null);
+      await loadData();
+    } catch {
+      setError("Failed to update backup config.");
+    }
+  };
+
+  const toggleConfigEnabled = async (config: DatabaseConfig) => {
+    if (!accessToken) return;
+    try {
+      await updateConfig(accessToken, config.id, { enabled: !config.enabled });
+      await loadData();
+    } catch {
+      setError("Failed to update backup config.");
+    }
   };
 
   const openEditStorageHost = (host: StorageHost) => {
@@ -521,6 +651,67 @@ export function HostsPage() {
     } catch { setError("Failed to create replication policy."); }
   };
 
+  const openEditPolicy = (policy: ReplicationPolicy) => {
+    const hasIndependentSchedule = policy.replication_frequency_minutes != null;
+    const freq = minutesToFreq(policy.replication_frequency_minutes ?? 1440);
+    setEditPolicyForm({
+      database_config: policy.database_config,
+      storage_host: policy.storage_host,
+      remote_path: policy.remote_path,
+      hasIndependentSchedule,
+      replicationFreqValue: Math.max(0, freq.value),
+      replicationFreqUnit: freq.unit,
+      replication_days_of_week: policy.replication_days_of_week || [],
+      replication_retention_days: policy.replication_retention_days,
+      replication_retention_exception_days: policy.replication_retention_exception_days,
+      replication_retention_exception_max_days: policy.replication_retention_exception_max_days,
+      enabled: policy.enabled,
+    });
+    setEditPolicyTab("targets");
+    setEditingPolicy(policy);
+  };
+
+  const submitEditPolicy = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!accessToken || !editingPolicy || !editPolicyForm.database_config || !editPolicyForm.storage_host) return;
+    const replicationMinutes = freqToMinutes(editPolicyForm.replicationFreqValue, editPolicyForm.replicationFreqUnit);
+    if (editPolicyForm.hasIndependentSchedule && replicationMinutes === 0 && editPolicyForm.replication_days_of_week.length === 0) {
+      setError("Select at least one weekday or set a replication interval greater than 0.");
+      return;
+    }
+    if (!editPolicyForm.remote_path.trim()) {
+      setError("Remote path is required.");
+      return;
+    }
+    try {
+      await updateReplicationPolicy(accessToken, editingPolicy.id, {
+        database_config: editPolicyForm.database_config,
+        storage_host: editPolicyForm.storage_host,
+        remote_path: editPolicyForm.remote_path,
+        enabled: editPolicyForm.enabled,
+        replication_frequency_minutes: editPolicyForm.hasIndependentSchedule ? replicationMinutes : null,
+        replication_days_of_week: editPolicyForm.hasIndependentSchedule ? editPolicyForm.replication_days_of_week : [],
+        replication_retention_days: editPolicyForm.replication_retention_days,
+        replication_retention_exception_days: editPolicyForm.replication_retention_exception_days,
+        replication_retention_exception_max_days: editPolicyForm.replication_retention_exception_max_days,
+      });
+      setEditingPolicy(null);
+      await loadData();
+    } catch {
+      setError("Failed to update replication policy.");
+    }
+  };
+
+  const togglePolicyEnabled = async (policy: ReplicationPolicy) => {
+    if (!accessToken) return;
+    try {
+      await updateReplicationPolicy(accessToken, policy.id, { enabled: !policy.enabled });
+      await loadData();
+    } catch {
+      setError("Failed to update replication policy.");
+    }
+  };
+
   const submitRestoreConfig = async (e: FormEvent) => {
     e.preventDefault();
     if (!accessToken || !restoreForm.source_config || !restoreForm.target_database) return;
@@ -620,6 +811,70 @@ export function HostsPage() {
     if (!sourceDb) return databases;
     return databases.filter((db) => db.db_type === sourceDb.db_type);
   };
+  const formatEffectiveRange = (from: string, to: string | null) => {
+    const fromLabel = new Date(from).toLocaleString();
+    if (!to) return `${fromLabel} -> current`;
+    return `${fromLabel} -> ${new Date(to).toLocaleString()}`;
+  };
+  const historyEntries = useMemo(() => {
+    if (!historyViewer) return [] as Array<{ id: number; effective: string; details: string }>;
+
+    if (historyViewer.type === "backup") {
+      return configVersions
+        .filter((version) => version.database_config === historyViewer.id)
+        .sort((left, right) => new Date(right.effective_from).getTime() - new Date(left.effective_from).getTime())
+        .map((version) => {
+          const database = dbById.get(version.database);
+          const dayNames = version.backup_days_of_week.length > 0
+            ? version.backup_days_of_week.map((day) => DAYS_OF_WEEK[day].short).join(", ")
+            : "Every day";
+          return {
+            id: version.id,
+            effective: formatEffectiveRange(version.effective_from, version.effective_to),
+            details: `${database ? dbDisplayName(database) : `Database ${version.database}`} · ${minutesToDisplay(version.backup_frequency_minutes)} · ${dayNames} · Retain ${version.retention_days}d`,
+          };
+        });
+    }
+
+    if (historyViewer.type === "restore") {
+      return restoreConfigVersions
+        .filter((version) => version.restore_config === historyViewer.id)
+        .sort((left, right) => new Date(right.effective_from).getTime() - new Date(left.effective_from).getTime())
+        .map((version) => {
+          const sourceConfig = configById.get(version.source_config);
+          const sourceDb = sourceConfig ? dbById.get(sourceConfig.database) : undefined;
+          const targetDb = dbById.get(version.target_database);
+          const dayNames = version.restore_days_of_week.length > 0
+            ? version.restore_days_of_week.map((day) => DAYS_OF_WEEK[day].short).join(", ")
+            : "Every day";
+          return {
+            id: version.id,
+            effective: formatEffectiveRange(version.effective_from, version.effective_to),
+            details: `${sourceDb ? dbDisplayName(sourceDb) : `Config ${version.source_config}`} -> ${targetDb ? dbDisplayName(targetDb) : `Database ${version.target_database}`} · ${minutesToDisplay(version.restore_frequency_minutes)} · ${dayNames}`,
+          };
+        });
+    }
+
+    return policyVersions
+      .filter((version) => version.replication_policy === historyViewer.id)
+      .sort((left, right) => new Date(right.effective_from).getTime() - new Date(left.effective_from).getTime())
+      .map((version) => {
+        const sourceConfig = configById.get(version.database_config);
+        const sourceDb = sourceConfig ? dbById.get(sourceConfig.database) : undefined;
+        const host = storageHostById.get(version.storage_host);
+        const schedule = version.replication_frequency_minutes == null
+          ? "After backup"
+          : minutesToDisplay(version.replication_frequency_minutes);
+        const dayNames = version.replication_days_of_week.length > 0
+          ? version.replication_days_of_week.map((day) => DAYS_OF_WEEK[day].short).join(", ")
+          : "Every day";
+        return {
+          id: version.id,
+          effective: formatEffectiveRange(version.effective_from, version.effective_to),
+          details: `${sourceDb ? dbDisplayName(sourceDb) : `Config ${version.database_config}`} -> ${host?.name ?? `Host ${version.storage_host}`} · ${schedule} · ${dayNames}`,
+        };
+      });
+  }, [historyViewer, configVersions, restoreConfigVersions, policyVersions, dbById, configById, storageHostById]);
 
   // -------------------------------------------------------------------------
   // View toggle component
@@ -1193,6 +1448,26 @@ export function HostsPage() {
                           </p>
                         </div>
                         <div className="ml-2 flex shrink-0 flex-col items-end gap-1.5">
+                          <Button
+                            type="button"
+                            variant="secondary"
+                            className={ACTION_BTN}
+                            onClick={() => setHistoryViewer({
+                              type: "backup",
+                              id: cfg.id,
+                              title: db ? `${dbDisplayName(db)} Backup Config` : `Config ${cfg.id}`,
+                            })}
+                          >
+                            History ({configVersionCountByConfigId.get(cfg.id) ?? 0})
+                          </Button>
+                          <Button type="button" variant="blue" className={ACTION_BTN}
+                            onClick={() => openEditConfig(cfg)}>
+                            <Pencil className="mr-1 h-3.5 w-3.5" />Edit
+                          </Button>
+                          <Button type="button" variant="secondary" className={ACTION_BTN}
+                            onClick={() => void toggleConfigEnabled(cfg)}>
+                            {cfg.enabled ? "Disable" : "Enable"}
+                          </Button>
                           <Button type="button" variant="danger" className={ACTION_BTN}
                             onClick={() => void deleteConfig(accessToken!, cfg.id).then(loadData)}>
                             <Trash2 className="mr-1 h-3.5 w-3.5" />Remove
@@ -1240,10 +1515,32 @@ export function HostsPage() {
                           {cfg.last_backup_at ? new Date(cfg.last_backup_at).toLocaleString() : "Never"}
                         </td>
                         <td className="px-4 py-2">
-                          <Button type="button" variant="danger" className={ACTION_BTN}
-                            onClick={() => void deleteConfig(accessToken!, cfg.id).then(loadData)}>
-                            <Trash2 className="mr-1 h-3.5 w-3.5" />Remove
-                          </Button>
+                          <div className="flex items-center gap-1.5">
+                            <Button
+                              type="button"
+                              variant="secondary"
+                              className={ACTION_BTN}
+                              onClick={() => setHistoryViewer({
+                                type: "backup",
+                                id: cfg.id,
+                                title: db ? `${dbDisplayName(db)} Backup Config` : `Config ${cfg.id}`,
+                              })}
+                            >
+                              History ({configVersionCountByConfigId.get(cfg.id) ?? 0})
+                            </Button>
+                            <Button type="button" variant="blue" className={ACTION_BTN}
+                              onClick={() => openEditConfig(cfg)}>
+                              <Pencil className="mr-1 h-3.5 w-3.5" />Edit
+                            </Button>
+                            <Button type="button" variant="secondary" className={ACTION_BTN}
+                              onClick={() => void toggleConfigEnabled(cfg)}>
+                              {cfg.enabled ? "Disable" : "Enable"}
+                            </Button>
+                            <Button type="button" variant="danger" className={ACTION_BTN}
+                              onClick={() => void deleteConfig(accessToken!, cfg.id).then(loadData)}>
+                              <Trash2 className="mr-1 h-3.5 w-3.5" />Remove
+                            </Button>
+                          </div>
                         </td>
                       </tr>
                     );
@@ -1502,6 +1799,20 @@ export function HostsPage() {
                           </p>
                         </div>
                         <div className="ml-2 flex shrink-0 flex-col items-end gap-1.5">
+                          <Button
+                            type="button"
+                            variant="secondary"
+                            className={ACTION_BTN}
+                            onClick={() => setHistoryViewer({
+                              type: "restore",
+                              id: restoreConfig.id,
+                              title: sourceDb
+                                ? `${dbDisplayName(sourceDb)} Restore Config`
+                                : `Restore Config ${restoreConfig.id}`,
+                            })}
+                          >
+                            History ({restoreVersionCountByConfigId.get(restoreConfig.id) ?? 0})
+                          </Button>
                           <Button type="button" variant="blue" className={ACTION_BTN}
                             onClick={() => openEditRestoreConfig(restoreConfig)}>
                             <Pencil className="mr-1 h-3.5 w-3.5" />Edit
@@ -1559,6 +1870,20 @@ export function HostsPage() {
                         </td>
                         <td className="px-4 py-2">
                           <div className="flex items-center gap-1.5">
+                            <Button
+                              type="button"
+                              variant="secondary"
+                              className={ACTION_BTN}
+                              onClick={() => setHistoryViewer({
+                                type: "restore",
+                                id: restoreConfig.id,
+                                title: sourceDb
+                                  ? `${dbDisplayName(sourceDb)} Restore Config`
+                                  : `Restore Config ${restoreConfig.id}`,
+                              })}
+                            >
+                              History ({restoreVersionCountByConfigId.get(restoreConfig.id) ?? 0})
+                            </Button>
                             <Button type="button" variant="blue" className={ACTION_BTN}
                               onClick={() => openEditRestoreConfig(restoreConfig)}>
                               <Pencil className="mr-1 h-3.5 w-3.5" />Edit
@@ -1946,6 +2271,26 @@ export function HostsPage() {
                           </p>
                         </div>
                         <div className="ml-2 flex shrink-0 flex-col items-end gap-1.5">
+                          <Button
+                            type="button"
+                            variant="secondary"
+                            className={ACTION_BTN}
+                            onClick={() => setHistoryViewer({
+                              type: "replication",
+                              id: policy.id,
+                              title: db ? `${dbDisplayName(db)} Replication Policy` : `Policy ${policy.id}`,
+                            })}
+                          >
+                            History ({policyVersionCountByConfigId.get(policy.id) ?? 0})
+                          </Button>
+                          <Button type="button" variant="blue" className={ACTION_BTN}
+                            onClick={() => openEditPolicy(policy)}>
+                            <Pencil className="mr-1 h-3.5 w-3.5" />Edit
+                          </Button>
+                          <Button type="button" variant="secondary" className={ACTION_BTN}
+                            onClick={() => void togglePolicyEnabled(policy)}>
+                            {policy.enabled ? "Disable" : "Enable"}
+                          </Button>
                           <Button type="button" variant="danger" className={ACTION_BTN}
                             onClick={() => void deleteReplicationPolicy(accessToken!, policy.id).then(loadData)}>
                             <Trash2 className="mr-1 h-3.5 w-3.5" />Remove
@@ -1997,10 +2342,32 @@ export function HostsPage() {
                         </td>
                         <td className="px-4 py-2 text-muted-foreground">{policy.enabled ? "Enabled" : "Disabled"}</td>
                         <td className="px-4 py-2">
-                          <Button type="button" variant="danger" className={ACTION_BTN}
-                            onClick={() => void deleteReplicationPolicy(accessToken!, policy.id).then(loadData)}>
-                            <Trash2 className="mr-1 h-3.5 w-3.5" />Remove
-                          </Button>
+                          <div className="flex items-center gap-1.5">
+                            <Button
+                              type="button"
+                              variant="secondary"
+                              className={ACTION_BTN}
+                              onClick={() => setHistoryViewer({
+                                type: "replication",
+                                id: policy.id,
+                                title: db ? `${dbDisplayName(db)} Replication Policy` : `Policy ${policy.id}`,
+                              })}
+                            >
+                              History ({policyVersionCountByConfigId.get(policy.id) ?? 0})
+                            </Button>
+                            <Button type="button" variant="blue" className={ACTION_BTN}
+                              onClick={() => openEditPolicy(policy)}>
+                              <Pencil className="mr-1 h-3.5 w-3.5" />Edit
+                            </Button>
+                            <Button type="button" variant="secondary" className={ACTION_BTN}
+                              onClick={() => void togglePolicyEnabled(policy)}>
+                              {policy.enabled ? "Disable" : "Enable"}
+                            </Button>
+                            <Button type="button" variant="danger" className={ACTION_BTN}
+                              onClick={() => void deleteReplicationPolicy(accessToken!, policy.id).then(loadData)}>
+                              <Trash2 className="mr-1 h-3.5 w-3.5" />Remove
+                            </Button>
+                          </div>
                         </td>
                       </tr>
                     );
@@ -2211,6 +2578,388 @@ export function HostsPage() {
           </Modal>
         </>
       )}
+
+      <Modal open={editingConfig !== null} onClose={() => setEditingConfig(null)} title="Edit Backup Config">
+        <form className="space-y-3" onSubmit={submitEditConfig}>
+          <div className="mb-2 flex gap-2 border-b border-border">
+            {[
+              { id: "database", label: "Database" },
+              { id: "schedule", label: "Schedule" },
+              { id: "retention", label: "Retention" },
+            ].map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setEditConfigTab(tab.id as "database" | "schedule" | "retention")}
+                className={`flex items-center gap-2 border-b-2 px-4 pb-3 pt-1 text-sm font-medium transition ${
+                  editConfigTab === tab.id
+                    ? "border-accent text-foreground"
+                    : "border-transparent text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+
+          {editConfigTab === "database" && (
+            <select
+              className="h-12 w-full rounded-xl border border-border bg-white px-4 text-sm shadow-soft"
+              value={editConfigForm.database || ""}
+              onChange={(e) => setEditConfigForm((p) => ({ ...p, database: Number(e.target.value) }))}
+              required
+            >
+              <option value="" disabled>Select database…</option>
+              {databases.map((db) => (
+                <option key={db.id} value={db.id}>{dbDisplayName(db)} ({dbTypeLabel[db.db_type]})</option>
+              ))}
+            </select>
+          )}
+
+          {editConfigTab === "schedule" && (
+            <div className="space-y-3">
+              <div>
+                <label className="mb-1 block text-xs text-muted-foreground">Backup frequency</label>
+                <div className="flex gap-2">
+                  <Input
+                    type="number"
+                    className="flex-1"
+                    value={editConfigForm.frequencyValue}
+                    onChange={(e) => setEditConfigForm((p) => ({ ...p, frequencyValue: Number(e.target.value) }))}
+                    min={0}
+                    required
+                  />
+                  <select
+                    className="h-12 rounded-xl border border-border bg-white px-3 text-sm shadow-soft"
+                    value={editConfigForm.frequencyUnit}
+                    onChange={(e) => setEditConfigForm((p) => ({ ...p, frequencyUnit: e.target.value as FreqUnit }))}
+                  >
+                    <option value="minutes">Minutes</option>
+                    <option value="hours">Hours</option>
+                    <option value="days">Days</option>
+                  </select>
+                </div>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  = {minutesToDisplay(freqToMinutes(editConfigForm.frequencyValue, editConfigForm.frequencyUnit))}
+                </p>
+              </div>
+              <div>
+                <label className="mb-2 block text-xs text-muted-foreground">Run on (empty = every day)</label>
+                <div className="flex flex-wrap gap-1.5">
+                  {DAYS_OF_WEEK.map((day) => {
+                    const active = editConfigForm.backup_days_of_week.includes(day.value);
+                    return (
+                      <button
+                        key={day.value}
+                        type="button"
+                        onClick={() => setEditConfigForm((p) => ({
+                          ...p,
+                          backup_days_of_week: active
+                            ? p.backup_days_of_week.filter((d) => d !== day.value)
+                            : [...p.backup_days_of_week, day.value],
+                        }))}
+                        className={cn(
+                          "rounded-lg border px-2.5 py-1 text-xs font-medium transition-colors",
+                          active
+                            ? "border-accent bg-accent/10 text-accent"
+                            : "border-border bg-white text-muted-foreground hover:border-accent/50"
+                        )}
+                      >
+                        {day.short}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+              <label className="flex items-center gap-2 text-xs font-medium text-foreground cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={editConfigForm.enabled}
+                  onChange={(e) => setEditConfigForm((p) => ({ ...p, enabled: e.target.checked }))}
+                  className="rounded"
+                />
+                Enabled
+              </label>
+            </div>
+          )}
+
+          {editConfigTab === "retention" && (
+            <div className="space-y-3">
+              <div>
+                <label className="mb-1 block text-xs text-muted-foreground">Retention period (days)</label>
+                <Input
+                  type="number"
+                  value={editConfigForm.retention_days}
+                  onChange={(e) => setEditConfigForm((p) => ({ ...p, retention_days: Number(e.target.value) }))}
+                  min={1}
+                  required
+                />
+              </div>
+              <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={editConfigForm.retention_keep_monthly_first}
+                  onChange={(e) => setEditConfigForm((p) => ({ ...p, retention_keep_monthly_first: e.target.checked }))}
+                  className="rounded"
+                />
+                Keep backup from 1st of each month
+              </label>
+              <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={editConfigForm.retention_keep_weekly_day !== null}
+                  onChange={(e) => setEditConfigForm((p) => ({
+                    ...p,
+                    retention_keep_weekly_day: e.target.checked ? 0 : null,
+                  }))}
+                  className="rounded"
+                />
+                Keep backup from a specific weekday
+              </label>
+              {editConfigForm.retention_keep_weekly_day !== null && (
+                <select
+                  className="h-9 w-full rounded-xl border border-border bg-white px-3 text-sm shadow-soft"
+                  value={editConfigForm.retention_keep_weekly_day}
+                  onChange={(e) => setEditConfigForm((p) => ({ ...p, retention_keep_weekly_day: Number(e.target.value) }))}
+                >
+                  {DAYS_OF_WEEK.map((day) => (
+                    <option key={day.value} value={day.value}>{day.label}</option>
+                  ))}
+                </select>
+              )}
+              <Input
+                type="number"
+                placeholder="Keep one every (days)"
+                value={editConfigForm.retention_exception_days ?? ""}
+                onChange={(e) => setEditConfigForm((p) => ({
+                  ...p,
+                  retention_exception_days: e.target.value ? Number(e.target.value) : null,
+                }))}
+                min={1}
+              />
+              <Input
+                type="number"
+                placeholder="Stop after (days)"
+                value={editConfigForm.retention_exception_max_days ?? ""}
+                onChange={(e) => setEditConfigForm((p) => ({
+                  ...p,
+                  retention_exception_max_days: e.target.value ? Number(e.target.value) : null,
+                }))}
+                min={1}
+              />
+            </div>
+          )}
+
+          <div className="flex justify-end gap-3 pt-2">
+            <Button variant="secondary" type="button" onClick={() => setEditingConfig(null)}>Cancel</Button>
+            <Button type="submit">Save</Button>
+          </div>
+        </form>
+      </Modal>
+
+      <Modal open={editingPolicy !== null} onClose={() => setEditingPolicy(null)} title="Edit Replication Policy">
+        <form className="space-y-3" onSubmit={submitEditPolicy}>
+          <div className="mb-2 flex gap-2 border-b border-border">
+            {[
+              { id: "targets", label: "Targets" },
+              { id: "schedule", label: "Schedule" },
+              { id: "retention", label: "Retention" },
+            ].map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setEditPolicyTab(tab.id as "targets" | "schedule" | "retention")}
+                className={`flex items-center gap-2 border-b-2 px-4 pb-3 pt-1 text-sm font-medium transition ${
+                  editPolicyTab === tab.id
+                    ? "border-accent text-foreground"
+                    : "border-transparent text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+
+          {editPolicyTab === "targets" && (
+            <div className="space-y-3">
+              <select
+                className="h-12 w-full rounded-xl border border-border bg-white px-4 text-sm shadow-soft"
+                value={editPolicyForm.database_config || ""}
+                onChange={(e) => setEditPolicyForm((p) => ({ ...p, database_config: Number(e.target.value) }))}
+                required
+              >
+                <option value="" disabled>Select backup config…</option>
+                {configs.map((cfg) => {
+                  const db = dbById.get(cfg.database);
+                  return <option key={cfg.id} value={cfg.id}>{db?.name ?? `Config ${cfg.id}`}</option>;
+                })}
+              </select>
+              <select
+                className="h-12 w-full rounded-xl border border-border bg-white px-4 text-sm shadow-soft"
+                value={editPolicyForm.storage_host || ""}
+                onChange={(e) => setEditPolicyForm((p) => ({ ...p, storage_host: Number(e.target.value) }))}
+                required
+              >
+                <option value="" disabled>Select storage host…</option>
+                {storageHosts.map((sh) => (
+                  <option key={sh.id} value={sh.id}>{sh.name} ({sh.address})</option>
+                ))}
+              </select>
+              <Input
+                placeholder="Remote path"
+                value={editPolicyForm.remote_path}
+                onChange={(e) => setEditPolicyForm((p) => ({ ...p, remote_path: e.target.value }))}
+                required
+              />
+              <label className="flex items-center gap-2 text-xs font-medium text-foreground cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={editPolicyForm.enabled}
+                  onChange={(e) => setEditPolicyForm((p) => ({ ...p, enabled: e.target.checked }))}
+                  className="rounded"
+                />
+                Enabled
+              </label>
+            </div>
+          )}
+
+          {editPolicyTab === "schedule" && (
+            <div className="space-y-3">
+              <label className="flex items-center gap-2 text-xs font-medium text-foreground cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={editPolicyForm.hasIndependentSchedule}
+                  onChange={(e) => setEditPolicyForm((p) => ({ ...p, hasIndependentSchedule: e.target.checked }))}
+                  className="rounded"
+                />
+                Independent replication schedule
+              </label>
+              {editPolicyForm.hasIndependentSchedule && (
+                <>
+                  <div className="flex gap-2">
+                    <Input
+                      type="number"
+                      className="flex-1"
+                      value={editPolicyForm.replicationFreqValue}
+                      onChange={(e) => setEditPolicyForm((p) => ({ ...p, replicationFreqValue: Number(e.target.value) }))}
+                      min={0}
+                    />
+                    <select
+                      className="h-12 rounded-xl border border-border bg-white px-3 text-sm shadow-soft"
+                      value={editPolicyForm.replicationFreqUnit}
+                      onChange={(e) => setEditPolicyForm((p) => ({ ...p, replicationFreqUnit: e.target.value as FreqUnit }))}
+                    >
+                      <option value="minutes">Minutes</option>
+                      <option value="hours">Hours</option>
+                      <option value="days">Days</option>
+                    </select>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {DAYS_OF_WEEK.map((day) => {
+                      const active = editPolicyForm.replication_days_of_week.includes(day.value);
+                      return (
+                        <button
+                          key={day.value}
+                          type="button"
+                          onClick={() => setEditPolicyForm((p) => ({
+                            ...p,
+                            replication_days_of_week: active
+                              ? p.replication_days_of_week.filter((d) => d !== day.value)
+                              : [...p.replication_days_of_week, day.value],
+                          }))}
+                          className={cn(
+                            "rounded-lg border px-2.5 py-1 text-xs font-medium transition-colors",
+                            active
+                              ? "border-accent bg-accent/10 text-accent"
+                              : "border-border bg-white text-muted-foreground hover:border-accent/50"
+                          )}
+                        >
+                          {day.short}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+
+          {editPolicyTab === "retention" && (
+            <div className="space-y-3">
+              <label className="flex items-center gap-2 text-xs font-medium text-foreground cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={editPolicyForm.replication_retention_days !== null}
+                  onChange={(e) => setEditPolicyForm((p) => ({
+                    ...p,
+                    replication_retention_days: e.target.checked ? 30 : null,
+                  }))}
+                  className="rounded"
+                />
+                Separate retention for replicated copies
+              </label>
+              {editPolicyForm.replication_retention_days !== null && (
+                <>
+                  <Input
+                    type="number"
+                    placeholder="Retain replicas (days)"
+                    value={editPolicyForm.replication_retention_days}
+                    onChange={(e) => setEditPolicyForm((p) => ({ ...p, replication_retention_days: Number(e.target.value) }))}
+                    min={1}
+                  />
+                  <Input
+                    type="number"
+                    placeholder="Keep one every (days)"
+                    value={editPolicyForm.replication_retention_exception_days ?? ""}
+                    onChange={(e) => setEditPolicyForm((p) => ({
+                      ...p,
+                      replication_retention_exception_days: e.target.value ? Number(e.target.value) : null,
+                    }))}
+                    min={1}
+                  />
+                  <Input
+                    type="number"
+                    placeholder="Stop after (days)"
+                    value={editPolicyForm.replication_retention_exception_max_days ?? ""}
+                    onChange={(e) => setEditPolicyForm((p) => ({
+                      ...p,
+                      replication_retention_exception_max_days: e.target.value ? Number(e.target.value) : null,
+                    }))}
+                    min={1}
+                  />
+                </>
+              )}
+            </div>
+          )}
+
+          <div className="flex justify-end gap-3 pt-2">
+            <Button variant="secondary" type="button" onClick={() => setEditingPolicy(null)}>Cancel</Button>
+            <Button type="submit">Save</Button>
+          </div>
+        </form>
+      </Modal>
+
+      <Modal
+        open={historyViewer !== null}
+        onClose={() => setHistoryViewer(null)}
+        title={historyViewer ? `${historyViewer.title} History` : "Config History"}
+      >
+        <div className="space-y-2">
+          {historyEntries.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No version history found.</p>
+          ) : (
+            historyEntries.map((entry) => (
+              <div key={entry.id} className="rounded-xl border border-border bg-muted/20 p-3">
+                <p className="text-xs font-medium text-foreground">{entry.effective}</p>
+                <p className="mt-1 text-xs text-muted-foreground">{entry.details}</p>
+              </div>
+            ))
+          )}
+        </div>
+        <div className="mt-4 flex justify-end">
+          <Button variant="secondary" type="button" onClick={() => setHistoryViewer(null)}>Close</Button>
+        </div>
+      </Modal>
     </Section>
   );
 }

@@ -418,7 +418,7 @@ class ConnectionStatusView(APIView):
 class DatabaseConfigViewSet(OwnerFilteredQuerysetMixin, viewsets.ModelViewSet):
     """CRUD for backup schedule configurations."""
 
-    queryset = DatabaseConfig.objects.select_related("database", "database__owner").all()
+    queryset = DatabaseConfig.objects.select_related("database", "database__owner").filter(is_one_time_event=False)
     serializer_class = DatabaseConfigSerializer
     permission_classes = (IsAuthenticated,)
     owner_lookup = "database__owner"
@@ -430,7 +430,7 @@ class ReplicationPolicyViewSet(OwnerFilteredQuerysetMixin, viewsets.ModelViewSet
     queryset = ReplicationPolicy.objects.select_related(
         "database_config__database__owner",
         "storage_host",
-    ).all()
+    ).filter(is_one_time_event=False)
     serializer_class = ReplicationPolicySerializer
     permission_classes = (IsAuthenticated,)
     owner_lookup = "database_config__database__owner"
@@ -451,7 +451,7 @@ class RestoreConfigViewSet(OwnerFilteredQuerysetMixin, viewsets.ModelViewSet):
     queryset = RestoreConfig.objects.select_related(
         "source_config__database__owner",
         "target_database",
-    ).all()
+    ).filter(is_one_time_event=False)
     serializer_class = RestoreConfigSerializer
     permission_classes = (IsAuthenticated,)
     owner_lookup = "source_config__database__owner"

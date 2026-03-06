@@ -1,5 +1,6 @@
 from django.conf import settings
 from django.db import models
+from django.db.models import Q
 
 from apps.common.crypto import decrypt_text, encrypt_text
 
@@ -110,6 +111,7 @@ class DatabaseConfig(models.Model):
     )
     last_backup_at = models.DateTimeField(null=True, blank=True)
     enabled = models.BooleanField(default=True)
+    is_one_time_event = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -162,12 +164,19 @@ class ReplicationPolicy(models.Model):
         blank=True,
         help_text="Stop replication retention exceptions after this many days.",
     )
+    is_one_time_event = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         ordering = ("-created_at",)
-        unique_together = ("database_config", "storage_host")
+        constraints = [
+            models.UniqueConstraint(
+                fields=("database_config", "storage_host"),
+                condition=Q(is_one_time_event=False),
+                name="uniq_regular_replication_policy_per_target",
+            )
+        ]
 
     def __str__(self):
         return f"Replicate {self.database_config} → {self.storage_host}"
@@ -197,6 +206,7 @@ class RestoreConfig(models.Model):
         help_text="Set by the scheduler when a restore run is enqueued.",
     )
     enabled = models.BooleanField(default=True)
+    is_one_time_event = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

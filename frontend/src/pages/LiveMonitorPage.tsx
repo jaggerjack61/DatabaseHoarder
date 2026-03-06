@@ -6,8 +6,8 @@ import { Button } from "@/components/ui/Button";
 import { Section } from "@/components/ui/Section";
 import { Table, TableWrapper } from "@/components/ui/Table";
 import { useAuth } from "@/context/AuthContext";
-import { getConfigs, getConnectionStatus, getDatabases, getLiveBackups, getLiveRestorations, getStorageHosts } from "@/lib/api";
-import { Backup, ConnectionStatusResponse, Database, DatabaseConfig, LiveBackupsResponse, LiveRestorationsResponse, RestoreJob, StorageHost } from "@/types/api";
+import { getConfigs, getConfigVersions, getConnectionStatus, getDatabases, getLiveBackups, getLiveRestorations, getStorageHosts } from "@/lib/api";
+import { Backup, ConnectionStatusResponse, Database, DatabaseConfig, DatabaseConfigVersion, LiveBackupsResponse, LiveRestorationsResponse, RestoreJob, StorageHost } from "@/types/api";
 
 function StatusBadge({ status }: { status: Backup["status"] | "PENDING" | "RUNNING" | "SUCCESS" | "FAILED" }) {
   if (status === "SUCCESS") return <Badge variant="success">Success</Badge>;
@@ -40,6 +40,7 @@ export function LiveMonitorPage() {
   const [live, setLive] = useState<LiveBackupsResponse | null>(null);
   const [liveRestorations, setLiveRestorations] = useState<LiveRestorationsResponse | null>(null);
   const [configs, setConfigs] = useState<DatabaseConfig[]>([]);
+  const [configVersions, setConfigVersions] = useState<DatabaseConfigVersion[]>([]);
   const [databases, setDatabases] = useState<Database[]>([]);
   const [storageHosts, setStorageHosts] = useState<StorageHost[]>([]);
   const [connections, setConnections] = useState<ConnectionStatusResponse | null>(null);
@@ -51,23 +52,63 @@ export function LiveMonitorPage() {
   const dbById = useMemo(() => new Map(databases.map((d) => [d.id, d])), [databases]);
   const configById = useMemo(() => new Map(configs.map((c) => [c.id, c])), [configs]);
   const storageHostById = useMemo(() => new Map(storageHosts.map((h) => [h.id, h])), [storageHosts]);
+  const latestVersionByConfigId = useMemo(() => {
+    const latest = new Map<number, DatabaseConfigVersion>();
+    for (const version of configVersions) {
+      const current = latest.get(version.database_config);
+      if (!current) {
+        latest.set(version.database_config, version);
+        continue;
+      }
+      if (new Date(version.effective_from).getTime() > new Date(current.effective_from).getTime()) {
+        latest.set(version.database_config, version);
+      }
+    }
+    return latest;
+  }, [configVersions]);
+
+  const configMetaById = useMemo(() => {
+    const meta = new Map<number, { databaseId: number; isOneTime: boolean }>();
+
+    for (const config of configs) {
+      meta.set(config.id, { databaseId: config.database, isOneTime: config.is_one_time_event });
+    }
+
+    for (const version of configVersions) {
+      if (!meta.has(version.database_config)) {
+        meta.set(version.database_config, { databaseId: version.database, isOneTime: version.is_one_time_event });
+      }
+    }
+
+    return meta;
+  }, [configs, configVersions]);
 
   const dbNameForConfig = (configId: number) => {
     const cfg = configById.get(configId);
-    if (!cfg) return `Config ${configId}`;
-    const db = dbById.get(cfg.database);
-    const displayName = db ? db.alias || db.name : `Database ${cfg.database}`;
+    const version = latestVersionByConfigId.get(configId);
+    const databaseId = cfg?.database ?? version?.database;
+    if (!databaseId) return `Config ${configId}`;
+    const db = dbById.get(databaseId);
+    const displayName = db ? db.alias || db.name : `Database ${databaseId}`;
     return db ? `${displayName} (${db.db_type})` : displayName;
+  };
+
+  const isOneTimeConfig = (configId: number) => {
+    const cfg = configById.get(configId);
+    if (cfg) return cfg.is_one_time_event;
+    return latestVersionByConfigId.get(configId)?.is_one_time_event ?? false;
   };
 
   const loadLookups = async () => {
     if (!accessToken) return;
-    const [cfgs, dbs, shs] = await Promise.all([
+    const [cfgs, cfgVersions, dbs, shs] = await Promise.all([
       getConfigs(accessToken),
+      getConfigVersions(accessToken),
       getDatabases(accessToken),
       getStorageHosts(accessToken),
     ]);
     setConfigs(cfgs);
+    setConfigVersions(cfgVersions);
     setDatabases(dbs);
     setStorageHosts(shs);
   };
@@ -267,7 +308,12 @@ export function LiveMonitorPage() {
                 {rows.map((row) => (
                   <tr key={row.id} className="border-b border-border/70 hover:bg-muted/60">
                     <td className="px-4 py-3">#{row.id}</td>
-                    <td className="px-4 py-3">{dbNameForConfig(row.database_config)}</td>
+                    <td className="px-4 py-3">
+                      <div className="flex items-center gap-2">
+                        <span>{dbNameForConfig(row.database_config)}</span>
+                        {isOneTimeConfig(row.database_config) && <Badge variant="neutral">One-time</Badge>}
+                      </div>
+                    </td>
                     <td className="px-4 py-3"><StatusBadge status={row.status} /></td>
                     <td className="px-4 py-3">
                       {row.replications.length === 0 ? (
@@ -326,7 +372,12 @@ export function LiveMonitorPage() {
                   <tr key={job.id} className="border-b border-border/70 hover:bg-muted/60">
                     <td className="px-4 py-3">#{job.id}</td>
                     <td className="px-4 py-3">#{job.backup}</td>
-                    <td className="px-4 py-3 text-xs text-muted-foreground">#{job.backup_database_config}</td>
+                    <td className="px-4 py-3 text-xs text-muted-foreground">
+                      <div className="flex items-center gap-2">
+                        <span>#{job.backup_database_config}</span>
+                        {(configMetaById.get(job.backup_database_config)?.isOneTime ?? false) && <Badge variant="neutral">One-time</Badge>}
+                      </div>
+                    </td>
                     <td className="px-4 py-3 text-xs text-muted-foreground">
                       {job.backup_database_name || job.backup_database_fallback_name || "—"}
                     </td>

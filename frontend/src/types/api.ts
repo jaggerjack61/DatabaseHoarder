@@ -115,6 +115,7 @@ export interface DatabaseConfig {
   retention_exception_max_days: number | null;
   last_backup_at: string | null;
   enabled: boolean;
+  is_one_time_event: boolean;
   created_at: string;
   updated_at?: string;
 }
@@ -140,6 +141,7 @@ export interface ReplicationPolicy {
   replication_retention_exception_days: number | null;
   /** null = no max duration for retention exceptions */
   replication_retention_exception_max_days: number | null;
+  is_one_time_event: boolean;
   created_at: string;
   updated_at?: string;
 }
@@ -156,6 +158,7 @@ export interface RestoreConfig {
   drop_target_on_success: boolean;
   last_restored_at: string | null;
   enabled: boolean;
+  is_one_time_event: boolean;
   created_at: string;
   updated_at?: string;
 }
@@ -174,6 +177,7 @@ export interface DatabaseConfigVersion {
   enabled: boolean;
   effective_from: string;
   effective_to: string | null;
+  is_one_time_event: boolean;
   created_at: string;
 }
 
@@ -191,6 +195,7 @@ export interface ReplicationPolicyVersion {
   replication_retention_exception_max_days: number | null;
   effective_from: string;
   effective_to: string | null;
+  is_one_time_event: boolean;
   created_at: string;
 }
 
@@ -205,6 +210,7 @@ export interface RestoreConfigVersion {
   enabled: boolean;
   effective_from: string;
   effective_to: string | null;
+  is_one_time_event: boolean;
   created_at: string;
 }
 
