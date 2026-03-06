@@ -9,7 +9,13 @@ from rest_framework.views import APIView
 from apps.common.crypto import decrypt_text
 from apps.common.models import SiteSettings
 
-from .access import accessible_configs_for_user, accessible_databases_for_user, accessible_storage_hosts_for_user
+from .access import (
+    accessible_configs_for_user,
+    accessible_databases_for_user,
+    accessible_replication_policies_for_user,
+    accessible_restore_configs_for_user,
+    accessible_storage_hosts_for_user,
+)
 from .models import (
     Database,
     DatabaseConfig,
@@ -440,9 +446,8 @@ class ReplicationPolicyViewSet(OwnerFilteredQuerysetMixin, viewsets.ModelViewSet
         user = self.request.user
         if user.is_admin:
             return queryset
-        accessible_config_ids = accessible_configs_for_user(user).values_list("id", flat=True)
-        accessible_host_ids = accessible_storage_hosts_for_user(user).values_list("id", flat=True)
-        return queryset.filter(database_config_id__in=accessible_config_ids, storage_host_id__in=accessible_host_ids)
+        accessible_policy_ids = accessible_replication_policies_for_user(user).values_list("id", flat=True)
+        return queryset.filter(id__in=accessible_policy_ids)
 
 
 class RestoreConfigViewSet(OwnerFilteredQuerysetMixin, viewsets.ModelViewSet):
@@ -461,9 +466,8 @@ class RestoreConfigViewSet(OwnerFilteredQuerysetMixin, viewsets.ModelViewSet):
         user = self.request.user
         if user.is_admin:
             return queryset
-        accessible_config_ids = accessible_configs_for_user(user).values_list("id", flat=True)
-        accessible_database_ids = accessible_databases_for_user(user).values_list("id", flat=True)
-        return queryset.filter(source_config_id__in=accessible_config_ids, target_database_id__in=accessible_database_ids)
+        accessible_restore_ids = accessible_restore_configs_for_user(user).values_list("id", flat=True)
+        return queryset.filter(id__in=accessible_restore_ids)
 
 
 class DatabaseConfigVersionViewSet(viewsets.ReadOnlyModelViewSet):
@@ -490,9 +494,8 @@ class ReplicationPolicyVersionViewSet(viewsets.ReadOnlyModelViewSet):
         user = self.request.user
         if user.is_admin:
             return queryset
-        accessible_config_ids = accessible_configs_for_user(user).values_list("id", flat=True)
-        accessible_host_ids = accessible_storage_hosts_for_user(user).values_list("id", flat=True)
-        return queryset.filter(database_config_id__in=accessible_config_ids, storage_host_id__in=accessible_host_ids)
+        accessible_policy_ids = accessible_replication_policies_for_user(user).values_list("id", flat=True)
+        return queryset.filter(replication_policy_id__in=accessible_policy_ids)
 
 
 class RestoreConfigVersionViewSet(viewsets.ReadOnlyModelViewSet):
@@ -505,6 +508,5 @@ class RestoreConfigVersionViewSet(viewsets.ReadOnlyModelViewSet):
         user = self.request.user
         if user.is_admin:
             return queryset
-        accessible_config_ids = accessible_configs_for_user(user).values_list("id", flat=True)
-        accessible_database_ids = accessible_databases_for_user(user).values_list("id", flat=True)
-        return queryset.filter(source_config_id__in=accessible_config_ids, target_database_id__in=accessible_database_ids)
+        accessible_restore_ids = accessible_restore_configs_for_user(user).values_list("id", flat=True)
+        return queryset.filter(restore_config_id__in=accessible_restore_ids)

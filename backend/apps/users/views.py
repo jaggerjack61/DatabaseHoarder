@@ -15,13 +15,12 @@ User = get_user_model()
 
 class UserViewSet(viewsets.ModelViewSet):
     queryset = User.objects.prefetch_related(
-        "access_profile",
-        "access_profile__granted_storage_hosts",
-        "access_profile__granted_databases",
-        "access_profile__granted_database_configs",
-        "granted_storage_hosts",
-        "granted_databases",
-        "granted_database_configs",
+        "access_profiles",
+        "access_profiles__granted_storage_hosts",
+        "access_profiles__granted_databases",
+        "access_profiles__granted_database_configs",
+        "access_profiles__granted_replication_policies",
+        "access_profiles__granted_restore_configs",
     ).all().order_by("id")
 
     def get_permissions(self):
@@ -72,6 +71,8 @@ class AccessProfileViewSet(viewsets.ModelViewSet):
         "granted_storage_hosts",
         "granted_databases",
         "granted_database_configs",
+        "granted_replication_policies",
+        "granted_restore_configs",
     ).all()
     serializer_class = AccessProfileSerializer
     permission_classes = [IsAuthenticated, IsAdminRole]

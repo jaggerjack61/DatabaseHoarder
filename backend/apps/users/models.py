@@ -13,6 +13,8 @@ class AccessProfile(models.Model):
     granted_storage_hosts = models.ManyToManyField("hosts.StorageHost", blank=True, related_name="access_profiles")
     granted_databases = models.ManyToManyField("hosts.Database", blank=True, related_name="access_profiles")
     granted_database_configs = models.ManyToManyField("hosts.DatabaseConfig", blank=True, related_name="access_profiles")
+    granted_replication_policies = models.ManyToManyField("hosts.ReplicationPolicy", blank=True, related_name="access_profiles")
+    granted_restore_configs = models.ManyToManyField("hosts.RestoreConfig", blank=True, related_name="access_profiles")
 
     class Meta:
         ordering = ("name",)
@@ -29,16 +31,7 @@ class DBAutoUserManager(UserManager):
 
 class User(AbstractUser):
     role = models.CharField(max_length=16, choices=UserRole.choices, default=UserRole.USER)
-    access_profile = models.ForeignKey(
-        "users.AccessProfile",
-        null=True,
-        blank=True,
-        on_delete=models.SET_NULL,
-        related_name="assigned_users",
-    )
-    granted_storage_hosts = models.ManyToManyField("hosts.StorageHost", blank=True, related_name="granted_users")
-    granted_databases = models.ManyToManyField("hosts.Database", blank=True, related_name="granted_users")
-    granted_database_configs = models.ManyToManyField("hosts.DatabaseConfig", blank=True, related_name="granted_users")
+    access_profiles = models.ManyToManyField("users.AccessProfile", blank=True, related_name="assigned_users")
     objects = DBAutoUserManager()
 
     @property

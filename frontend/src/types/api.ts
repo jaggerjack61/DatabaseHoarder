@@ -21,10 +21,7 @@ export interface UserAccount {
   role: UserRole;
   is_active: boolean;
   date_joined: string;
-  access_profile: number | null;
-  granted_storage_hosts: number[];
-  granted_databases: number[];
-  granted_database_configs: number[];
+  access_profiles: number[];
 }
 
 export interface AccessProfile {
@@ -34,6 +31,8 @@ export interface AccessProfile {
   granted_storage_hosts: number[];
   granted_databases: number[];
   granted_database_configs: number[];
+  granted_replication_policies: number[];
+  granted_restore_configs: number[];
 }
 
 /** SSH server used to store replicated backup files. Unrelated to databases. */

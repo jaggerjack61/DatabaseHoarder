@@ -437,10 +437,7 @@ export function createUser(
     email: string;
     password: string;
     role: "ADMIN" | "USER";
-    access_profile?: number | null;
-    granted_storage_hosts?: number[];
-    granted_databases?: number[];
-    granted_database_configs?: number[];
+    access_profiles?: number[];
   },
 ) {
   return request<UserAccount>("/api/users/", { method: "POST", body: JSON.stringify(payload) }, accessToken);
@@ -454,10 +451,7 @@ export function updateUser(
     email: string;
     role: "ADMIN" | "USER";
     is_active: boolean;
-    access_profile: number | null;
-    granted_storage_hosts: number[];
-    granted_databases: number[];
-    granted_database_configs: number[];
+    access_profiles: number[];
   }>,
 ) {
   return request<UserAccount>(`/api/users/${userId}/`, { method: "PATCH", body: JSON.stringify(payload) }, accessToken);
@@ -503,6 +497,8 @@ export function createAccessProfile(
     granted_storage_hosts?: number[];
     granted_databases?: number[];
     granted_database_configs?: number[];
+    granted_replication_policies?: number[];
+    granted_restore_configs?: number[];
   },
 ) {
   return request<AccessProfile>("/api/users/access-profiles/", { method: "POST", body: JSON.stringify(payload) }, accessToken);
@@ -517,6 +513,8 @@ export function updateAccessProfile(
     granted_storage_hosts: number[];
     granted_databases: number[];
     granted_database_configs: number[];
+    granted_replication_policies: number[];
+    granted_restore_configs: number[];
   }>,
 ) {
   return request<AccessProfile>(`/api/users/access-profiles/${id}/`, { method: "PATCH", body: JSON.stringify(payload) }, accessToken);

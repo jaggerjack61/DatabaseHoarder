@@ -12,6 +12,8 @@ import {
   createUser,
   getAccessProfiles,
   getConfigs,
+  getReplicationPolicies,
+  getRestoreConfigs,
   getPasswordRules,
   getSiteSettings,
   getStorageHosts,
@@ -22,7 +24,7 @@ import {
   updateUser,
   updateSiteSettings,
 } from "@/lib/api";
-import { AccessProfile, Database, DatabaseConfig, SiteSettings, StorageHost, UserAccount } from "@/types/api";
+import { AccessProfile, Database, DatabaseConfig, ReplicationPolicy, RestoreConfig, SiteSettings, StorageHost, UserAccount } from "@/types/api";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -423,53 +425,53 @@ function UserManagementSection() {
   const [storageHosts, setStorageHosts] = useState<StorageHost[]>([]);
   const [databases, setDatabases] = useState<Database[]>([]);
   const [configs, setConfigs] = useState<DatabaseConfig[]>([]);
+  const [replicationPolicies, setReplicationPolicies] = useState<ReplicationPolicy[]>([]);
+  const [restoreConfigs, setRestoreConfigs] = useState<RestoreConfig[]>([]);
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState<string | null>(null);
   const [isError, setIsError] = useState(false);
 
-  const [newUser, setNewUser] = useState({ username: "", email: "", password: "", role: "USER" as "ADMIN" | "USER", access_profile: null as number | null });
+  const [newUser, setNewUser] = useState({ username: "", email: "", password: "", role: "USER" as "ADMIN" | "USER", access_profiles: [] as number[] });
   const [profileForm, setProfileForm] = useState({ name: "", description: "" });
   const [selectedProfileId, setSelectedProfileId] = useState<number | null>(null);
   const [profileAccessForm, setProfileAccessForm] = useState({
     granted_storage_hosts: [] as number[],
     granted_databases: [] as number[],
     granted_database_configs: [] as number[],
+    granted_replication_policies: [] as number[],
+    granted_restore_configs: [] as number[],
   });
   const [profilePanelsOpen, setProfilePanelsOpen] = useState({
     storageHosts: true,
     databases: true,
     configs: true,
+    replication: true,
+    restoration: true,
   });
   const [selectedUserId, setSelectedUserId] = useState<number | null>(null);
-  const [accessForm, setAccessForm] = useState({
-    access_profile: null as number | null,
-    granted_storage_hosts: [] as number[],
-    granted_databases: [] as number[],
-    granted_database_configs: [] as number[],
-  });
-  const [userPanelsOpen, setUserPanelsOpen] = useState({
-    storageHosts: true,
-    databases: true,
-    configs: true,
-  });
+  const [selectedUserProfileIds, setSelectedUserProfileIds] = useState<number[]>([]);
   const [activeTab, setActiveTab] = useState<"create" | "profiles" | "assign">("create");
 
   const load = async () => {
     if (!accessToken) return;
     setLoading(true);
     try {
-      const [userRows, profileRows, hostRows, dbRows, cfgRows] = await Promise.all([
+      const [userRows, profileRows, hostRows, dbRows, cfgRows, replicationRows, restoreRows] = await Promise.all([
         getUsers(accessToken),
         getAccessProfiles(accessToken),
         getStorageHosts(accessToken),
         getDatabases(accessToken),
         getConfigs(accessToken),
+        getReplicationPolicies(accessToken),
+        getRestoreConfigs(accessToken),
       ]);
       setUsers(userRows);
       setAccessProfiles(profileRows);
       setStorageHosts(hostRows);
       setDatabases(dbRows);
       setConfigs(cfgRows);
+      setReplicationPolicies(replicationRows);
+      setRestoreConfigs(restoreRows);
       if (!selectedProfileId && profileRows.length > 0) {
         setSelectedProfileId(profileRows[0].id);
       }
@@ -492,33 +494,29 @@ function UserManagementSection() {
   useEffect(() => {
     const selected = users.find((user) => user.id === selectedUserId);
     if (!selected) return;
-    setAccessForm({
-      access_profile: selected.access_profile,
-      granted_storage_hosts: selected.granted_storage_hosts,
-      granted_databases: selected.granted_databases,
-      granted_database_configs: selected.granted_database_configs,
-    });
+
+    setSelectedUserProfileIds(selected.access_profiles ?? []);
   }, [selectedUserId, users]);
 
   useEffect(() => {
     const selected = accessProfiles.find((profile) => profile.id === selectedProfileId);
     if (!selected) return;
+
+    const allowedConfigIds = new Set(configs.map((cfg) => cfg.id));
+    const visibleGrantedConfigIds = selected.granted_database_configs.filter((configId) => allowedConfigIds.has(configId));
+    const allowedReplicationPolicyIds = new Set(replicationPolicies.map((policy) => policy.id));
+    const visibleGrantedReplicationPolicyIds = selected.granted_replication_policies.filter((policyId) => allowedReplicationPolicyIds.has(policyId));
+    const allowedRestoreConfigIds = new Set(restoreConfigs.map((restoreCfg) => restoreCfg.id));
+    const visibleGrantedRestoreConfigIds = selected.granted_restore_configs.filter((restoreConfigId) => allowedRestoreConfigIds.has(restoreConfigId));
+
     setProfileAccessForm({
       granted_storage_hosts: selected.granted_storage_hosts,
       granted_databases: selected.granted_databases,
-      granted_database_configs: selected.granted_database_configs,
+      granted_database_configs: visibleGrantedConfigIds,
+      granted_replication_policies: visibleGrantedReplicationPolicyIds,
+      granted_restore_configs: visibleGrantedRestoreConfigIds,
     });
-  }, [selectedProfileId, accessProfiles]);
-
-  const toggle = (field: "granted_storage_hosts" | "granted_databases" | "granted_database_configs", id: number) => {
-    setAccessForm((prev) => {
-      const current = prev[field];
-      return {
-        ...prev,
-        [field]: current.includes(id) ? current.filter((itemId) => itemId !== id) : [...current, id],
-      };
-    });
-  };
+  }, [selectedProfileId, accessProfiles, configs, replicationPolicies, restoreConfigs]);
 
   const handleCreateUser = async () => {
     if (!accessToken) return;
@@ -527,7 +525,7 @@ function UserManagementSection() {
       await createUser(accessToken, newUser);
       setIsError(false);
       setMessage("User created.");
-      setNewUser({ username: "", email: "", password: "", role: "USER", access_profile: null });
+      setNewUser({ username: "", email: "", password: "", role: "USER", access_profiles: [] });
       await load();
     } catch (err) {
       setIsError(true);
@@ -540,17 +538,14 @@ function UserManagementSection() {
     setMessage(null);
     try {
       await updateUser(accessToken, selectedUserId, {
-        access_profile: accessForm.access_profile,
-        granted_storage_hosts: accessForm.granted_storage_hosts,
-        granted_databases: accessForm.granted_databases,
-        granted_database_configs: accessForm.granted_database_configs,
+        access_profiles: selectedUserProfileIds,
       });
       setIsError(false);
-      setMessage("Access grants saved.");
+      setMessage("Profile assignments saved.");
       await load();
     } catch (err) {
       setIsError(true);
-      setMessage(err instanceof Error ? err.message : "Failed to save access grants.");
+      setMessage(err instanceof Error ? err.message : "Failed to save profile assignments.");
     }
   };
 
@@ -580,6 +575,8 @@ function UserManagementSection() {
         granted_storage_hosts: profileAccessForm.granted_storage_hosts,
         granted_databases: profileAccessForm.granted_databases,
         granted_database_configs: profileAccessForm.granted_database_configs,
+        granted_replication_policies: profileAccessForm.granted_replication_policies,
+        granted_restore_configs: profileAccessForm.granted_restore_configs,
       });
       setIsError(false);
       setMessage("Profile access saved.");
@@ -588,6 +585,31 @@ function UserManagementSection() {
       setIsError(true);
       setMessage(err instanceof Error ? err.message : "Failed to save profile access.");
     }
+  };
+
+  const databaseById = new Map(databases.map((db) => [db.id, db]));
+  const backupConfigById = new Map(configs.map((cfg) => [cfg.id, cfg]));
+
+  const getConfigLabel = (configId: number) => {
+    const cfg = backupConfigById.get(configId);
+    if (!cfg) return `Backup Config ${configId}`;
+    const db = databaseById.get(cfg.database);
+    const dbLabel = db ? (db.alias || db.name) : `DB ${cfg.database}`;
+    return `${dbLabel} · Backup Config ${cfg.id}`;
+  };
+
+  const getReplicationLabel = (policy: ReplicationPolicy) => {
+    const sourceLabel = getConfigLabel(policy.database_config);
+    const host = storageHosts.find((item) => item.id === policy.storage_host);
+    const hostLabel = host ? host.name : `Host ${policy.storage_host}`;
+    return `${sourceLabel} -> ${hostLabel}`;
+  };
+
+  const getRestoreLabel = (restoreCfg: RestoreConfig) => {
+    const sourceLabel = getConfigLabel(restoreCfg.source_config);
+    const targetDb = databaseById.get(restoreCfg.target_database);
+    const targetLabel = targetDb ? (targetDb.alias || targetDb.name) : `DB ${restoreCfg.target_database}`;
+    return `${sourceLabel} -> ${targetLabel}`;
   };
 
   return (
@@ -617,7 +639,7 @@ function UserManagementSection() {
       </div>
 
       {activeTab === "create" && (
-        <SettingRow label="Create User" hint="Users cannot access Settings and can only see resources assigned below.">
+        <SettingRow label="Create User" hint="USER accounts must be assigned one or more access profiles.">
           <div className="max-w-xl space-y-2">
             <Input placeholder="Username" value={newUser.username} onChange={(e) => setNewUser((prev) => ({ ...prev, username: e.target.value }))} />
             <Input placeholder="Email" value={newUser.email} onChange={(e) => setNewUser((prev) => ({ ...prev, email: e.target.value }))} />
@@ -630,17 +652,32 @@ function UserManagementSection() {
               <option value="USER">USER</option>
               <option value="ADMIN">ADMIN</option>
             </select>
-            <select
-              className="h-10 w-full rounded-xl border border-border bg-white px-3 text-sm"
-              value={newUser.access_profile ?? ""}
-              onChange={(e) => setNewUser((prev) => ({ ...prev, access_profile: e.target.value ? Number(e.target.value) : null }))}
+            <div className="rounded-xl border border-border p-3">
+              <p className="mb-2 text-xs font-medium text-muted-foreground">Assign Access Profiles</p>
+              <div className="grid gap-1">
+                {accessProfiles.map((profile) => (
+                  <label key={profile.id} className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      className="h-4 w-4 accent-accent"
+                      checked={newUser.access_profiles.includes(profile.id)}
+                      onChange={() => setNewUser((prev) => ({
+                        ...prev,
+                        access_profiles: prev.access_profiles.includes(profile.id)
+                          ? prev.access_profiles.filter((id) => id !== profile.id)
+                          : [...prev.access_profiles, profile.id],
+                      }))}
+                    />
+                    {profile.name}
+                  </label>
+                ))}
+              </div>
+            </div>
+            <Button
+              size="sm"
+              onClick={() => void handleCreateUser()}
+              disabled={!newUser.username || !newUser.password || (newUser.role === "USER" && newUser.access_profiles.length === 0)}
             >
-              <option value="">No access profile</option>
-              {accessProfiles.map((profile) => (
-                <option key={profile.id} value={profile.id}>{profile.name}</option>
-              ))}
-            </select>
-            <Button size="sm" onClick={() => void handleCreateUser()} disabled={!newUser.username || !newUser.password}>
               Add User
             </Button>
           </div>
@@ -744,7 +781,53 @@ function UserManagementSection() {
                             : [...prev.granted_database_configs, cfg.id],
                         }))}
                       />
-                      Config #{cfg.id}
+                      {getConfigLabel(cfg.id)}
+                    </label>
+                  ))}
+                </CollapsibleGroup>
+
+                <CollapsibleGroup
+                  title="Replication Configurations"
+                  isOpen={profilePanelsOpen.replication}
+                  onToggle={() => setProfilePanelsOpen((prev) => ({ ...prev, replication: !prev.replication }))}
+                >
+                  {replicationPolicies.map((policy) => (
+                    <label key={policy.id} className="flex items-center gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        className="h-4 w-4 accent-accent"
+                        checked={profileAccessForm.granted_replication_policies.includes(policy.id)}
+                        onChange={() => setProfileAccessForm((prev) => ({
+                          ...prev,
+                          granted_replication_policies: prev.granted_replication_policies.includes(policy.id)
+                            ? prev.granted_replication_policies.filter((itemId) => itemId !== policy.id)
+                            : [...prev.granted_replication_policies, policy.id],
+                        }))}
+                      />
+                      {getReplicationLabel(policy)}
+                    </label>
+                  ))}
+                </CollapsibleGroup>
+
+                <CollapsibleGroup
+                  title="Restoration Configurations"
+                  isOpen={profilePanelsOpen.restoration}
+                  onToggle={() => setProfilePanelsOpen((prev) => ({ ...prev, restoration: !prev.restoration }))}
+                >
+                  {restoreConfigs.map((restoreCfg) => (
+                    <label key={restoreCfg.id} className="flex items-center gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        className="h-4 w-4 accent-accent"
+                        checked={profileAccessForm.granted_restore_configs.includes(restoreCfg.id)}
+                        onChange={() => setProfileAccessForm((prev) => ({
+                          ...prev,
+                          granted_restore_configs: prev.granted_restore_configs.includes(restoreCfg.id)
+                            ? prev.granted_restore_configs.filter((itemId) => itemId !== restoreCfg.id)
+                            : [...prev.granted_restore_configs, restoreCfg.id],
+                        }))}
+                      />
+                      {getRestoreLabel(restoreCfg)}
                     </label>
                   ))}
                 </CollapsibleGroup>
@@ -757,7 +840,7 @@ function UserManagementSection() {
       )}
 
       {activeTab === "assign" && (
-        <SettingRow label="Assign Access" hint="Grant only the hosts, databases, and configs this user may manage.">
+        <SettingRow label="Assign Access" hint="Assign one or more access profiles. Direct user-level resource grants are disabled.">
           <div className="space-y-3">
             <select
               className="h-10 w-full rounded-xl border border-border bg-white px-3 text-sm"
@@ -773,75 +856,30 @@ function UserManagementSection() {
 
             {selectedUserId && (
               <>
-                <div>
-                  <p className="text-xs font-medium text-muted-foreground">Access Profile</p>
-                  <select
-                    className="mt-2 h-10 w-full rounded-xl border border-border bg-white px-3 text-sm"
-                    value={accessForm.access_profile ?? ""}
-                    onChange={(e) => setAccessForm((prev) => ({ ...prev, access_profile: e.target.value ? Number(e.target.value) : null }))}
-                  >
-                    <option value="">No profile (direct grants only)</option>
+                <div className="rounded-xl border border-border p-3">
+                  <p className="mb-2 text-xs font-medium text-muted-foreground">Assigned Access Profiles</p>
+                  <div className="grid gap-1">
                     {accessProfiles.map((profile) => (
-                      <option key={profile.id} value={profile.id}>{profile.name}</option>
+                      <label key={profile.id} className="flex items-center gap-2 text-sm">
+                        <input
+                          type="checkbox"
+                          className="h-4 w-4 accent-accent"
+                          checked={selectedUserProfileIds.includes(profile.id)}
+                          onChange={() => setSelectedUserProfileIds((prev) => (
+                            prev.includes(profile.id)
+                              ? prev.filter((id) => id !== profile.id)
+                              : [...prev, profile.id]
+                          ))}
+                        />
+                        {profile.name}
+                      </label>
                     ))}
-                  </select>
+                  </div>
                 </div>
 
-                <CollapsibleGroup
-                  title="Storage Hosts"
-                  isOpen={userPanelsOpen.storageHosts}
-                  onToggle={() => setUserPanelsOpen((prev) => ({ ...prev, storageHosts: !prev.storageHosts }))}
-                >
-                  {storageHosts.map((host) => (
-                    <label key={host.id} className="flex items-center gap-2 text-sm">
-                      <input
-                        type="checkbox"
-                        className="h-4 w-4 accent-accent"
-                        checked={accessForm.granted_storage_hosts.includes(host.id)}
-                        onChange={() => toggle("granted_storage_hosts", host.id)}
-                      />
-                      {host.name}
-                    </label>
-                  ))}
-                </CollapsibleGroup>
-
-                <CollapsibleGroup
-                  title="Databases"
-                  isOpen={userPanelsOpen.databases}
-                  onToggle={() => setUserPanelsOpen((prev) => ({ ...prev, databases: !prev.databases }))}
-                >
-                  {databases.map((db) => (
-                    <label key={db.id} className="flex items-center gap-2 text-sm">
-                      <input
-                        type="checkbox"
-                        className="h-4 w-4 accent-accent"
-                        checked={accessForm.granted_databases.includes(db.id)}
-                        onChange={() => toggle("granted_databases", db.id)}
-                      />
-                      {db.name}
-                    </label>
-                  ))}
-                </CollapsibleGroup>
-
-                <CollapsibleGroup
-                  title="Backup Configurations"
-                  isOpen={userPanelsOpen.configs}
-                  onToggle={() => setUserPanelsOpen((prev) => ({ ...prev, configs: !prev.configs }))}
-                >
-                  {configs.map((cfg) => (
-                    <label key={cfg.id} className="flex items-center gap-2 text-sm">
-                      <input
-                        type="checkbox"
-                        className="h-4 w-4 accent-accent"
-                        checked={accessForm.granted_database_configs.includes(cfg.id)}
-                        onChange={() => toggle("granted_database_configs", cfg.id)}
-                      />
-                      Config #{cfg.id}
-                    </label>
-                  ))}
-                </CollapsibleGroup>
-
-                <Button size="sm" onClick={() => void handleSaveAccess()}>Save Access Grants</Button>
+                <Button size="sm" onClick={() => void handleSaveAccess()} disabled={selectedUserProfileIds.length === 0}>
+                  Save Profile Assignments
+                </Button>
               </>
             )}
           </div>
