@@ -1,0 +1,10 @@
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+db.sqlite3
+media/
+celerybeat-schedule
+celerybeat-schedule-shm
+celerybeat-schedule-wal
+tmpclaude-8f7b-cwd

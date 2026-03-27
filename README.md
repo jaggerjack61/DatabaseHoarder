@@ -17,6 +17,23 @@ A multi-tenant Database Backup Automation platform.
 
 ## Quick Start
 
+### Docker Compose
+1. Install Docker Desktop or another recent Docker engine with Compose support.
+2. From the repository root, run `docker compose up --build`.
+3. Create an admin account with `docker compose exec backend python manage.py createsuperuser`.
+4. Open `http://localhost:5173/login` for the frontend.
+5. Open `http://localhost:8000/health` for the backend health check.
+6. Stop the stack with `docker compose down`.
+
+The Compose stack starts these services:
+- `frontend` on port `5173`
+- `backend` on port `8000`
+- `redis` on port `6379`
+- `celery-worker`
+- `celery-beat`
+
+The bundled Compose configuration uses SQLite for the Django app and mounts the project folders for local development.
+
 ### Backend
 1. `cd backend`
 2. `python -m venv venv`
@@ -44,6 +61,7 @@ Run workers in separate terminals (also from `backend/` with the venv active):
 
 | Prefix | Resource |
 |---|---|
+| `GET /health` | Public liveness/readiness check for database + cache |
 | `POST /api/auth/token/` | Obtain JWT token pair |
 | `POST /api/auth/token/refresh/` | Refresh access token |
 | `GET /api/users/password-rules/` | List active password requirements |
@@ -81,6 +99,7 @@ Run workers in separate terminals (also from `backend/` with the venv active):
 
 ## Notes
 - SQLite databases: set the `host` field to the absolute file path of the `.db` file.
+- `GET /health` returns `200` when both the database and cache checks succeed, otherwise `503`.
 - Restore runs asynchronously. For PostgreSQL/MySQL the target database is created if it does not exist.
 - Backup Engine Mode is configurable from **Settings** (admin) and also via `BACKUP_EXECUTION_MODE` (`python`, `native`, or `auto`) as environment fallback.
 - For production-grade parity with native database dump/restore semantics, use `native` (or `auto` when tools are installed).

@@ -1,0 +1,115 @@
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    working_dir: /app/backend
+    command: >
+      sh -c "python manage.py migrate &&
+      python manage.py runserver 0.0.0.0:8000"
+    environment:
+      DEBUG: "True"
+      SECRET_KEY: change-me
+      ALLOWED_HOSTS: localhost,127.0.0.1,backend
+      CORS_ALLOWED_ORIGINS: http://localhost:5173,http://127.0.0.1:5173
+      DB_ENGINE: sqlite
+      SQLITE_NAME: db.sqlite3
+      REDIS_URL: redis://redis:6379/0
+      BACKUP_EXECUTION_MODE: auto
+    volumes:
+      - ./backend:/app/backend
+    ports:
+      - "8000:8000"
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5).read()",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  celery-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    working_dir: /app/backend
+    command: celery -A config worker -l info
+    environment:
+      DEBUG: "True"
+      SECRET_KEY: change-me
+      ALLOWED_HOSTS: localhost,127.0.0.1,backend
+      CORS_ALLOWED_ORIGINS: http://localhost:5173,http://127.0.0.1:5173
+      DB_ENGINE: sqlite
+      SQLITE_NAME: db.sqlite3
+      REDIS_URL: redis://redis:6379/0
+      BACKUP_EXECUTION_MODE: auto
+    volumes:
+      - ./backend:/app/backend
+    depends_on:
+      redis:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+
+  celery-beat:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    working_dir: /app/backend
+    command: celery -A config beat -l info
+    environment:
+      DEBUG: "True"
+      SECRET_KEY: change-me
+      ALLOWED_HOSTS: localhost,127.0.0.1,backend
+      CORS_ALLOWED_ORIGINS: http://localhost:5173,http://127.0.0.1:5173
+      DB_ENGINE: sqlite
+      SQLITE_NAME: db.sqlite3
+      REDIS_URL: redis://redis:6379/0
+      BACKUP_EXECUTION_MODE: auto
+    volumes:
+      - ./backend:/app/backend
+    depends_on:
+      redis:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    working_dir: /app/frontend
+    command: npm run dev -- --host 0.0.0.0 --port 5173
+    environment:
+      VITE_API_BASE_URL: http://localhost:8000
+    volumes:
+      - ./frontend:/app/frontend
+      - frontend_node_modules:/app/frontend/node_modules
+    ports:
+      - "5173:5173"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  frontend_node_modules:
+  redis_data:
