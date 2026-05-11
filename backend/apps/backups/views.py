@@ -55,7 +55,7 @@ class BackupViewSet(viewsets.ReadOnlyModelViewSet):
             "database_config__database",
             "database_config__database__owner",
         )
-        .prefetch_related("replications__storage_host")
+        .prefetch_related("replications")
         .all()
     )
     serializer_class = BackupSerializer

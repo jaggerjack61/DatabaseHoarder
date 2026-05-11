@@ -515,10 +515,13 @@ def _restore_mysql(config: DatabaseConfig, backup_path: Path, target_db: str):
     # Decompress with Python's built-in gzip (no system gunzip needed)
     with gzip.open(backup_path, "rb") as dump_gz:
         restore = subprocess.Popen(restore_cmd, env=env, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
+        if restore.stdin is None or restore.stderr is None:
+            raise RuntimeError("mysql restore process pipes were not created.")
         for chunk in iter(lambda: dump_gz.read(65536), b""):
             restore.stdin.write(chunk)
         restore.stdin.close()
-        _, stderr_data = restore.communicate()
+        stderr_data = restore.stderr.read()
+        restore.wait()
 
     if restore.returncode != 0:
         raise RuntimeError(f"mysql restore failed: {stderr_data.decode(errors='replace').strip()}")
@@ -805,6 +808,7 @@ def execute_backup(config_id: int, backup_id: int | None = None):
             target=f"DatabaseConfig:{config.id}",
             metadata={"error": str(exc), "backup_id": backup.id},
         )
+        raise
 
 
 # ---------------------------------------------------------------------------
